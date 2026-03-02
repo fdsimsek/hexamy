@@ -11,10 +11,12 @@ const MAX_CONNECTIONS = Number(process.env.MAX_CONNECTIONS || 64);
 const MAX_BUFFERED_AMOUNT_BYTES = Number(
   process.env.MAX_BUFFERED_AMOUNT_BYTES || 512 * 1024,
 );
-const PING_INTERVAL_MS = Number(process.env.PING_INTERVAL_MS || 1000);
+const PING_INTERVAL_MS = Number(process.env.PING_INTERVAL_MS || 500);
 const PONG_TIMEOUT_MS = Number(process.env.PONG_TIMEOUT_MS || 6000);
-const PING_SMOOTHING_ALPHA = Number(process.env.PING_SMOOTHING_ALPHA || 0.35);
-const PING_SPIKE_CAP_MULTIPLIER = Number(process.env.PING_SPIKE_CAP_MULTIPLIER || 1.8);
+const PING_SMOOTHING_ALPHA = Number(process.env.PING_SMOOTHING_ALPHA || 0.25);
+const PING_SPIKE_CAP_MULTIPLIER = Number(process.env.PING_SPIKE_CAP_MULTIPLIER || 1.5);
+const PING_BASELINE_DECAY = Number(process.env.PING_BASELINE_DECAY || 0.08);
+const PING_DISPLAY_FLOOR_MS = Number(process.env.PING_DISPLAY_FLOOR_MS || 0);
 const RATE_WINDOW_MS = Number(process.env.RATE_WINDOW_MS || 1000);
 const RATE_LIMIT_PER_WINDOW = {
   input: Number(process.env.RATE_LIMIT_INPUT || 120),
@@ -825,6 +827,7 @@ wss.on("connection", (ws) => {
     kickCooldown: 0,
     pingMs: null,
     pingRawMs: null,
+    pingBaselineMs: null,
     lastPongAt: Date.now(),
     lastPingSentAt: 0,
     awaitingPong: false,
@@ -872,11 +875,25 @@ wss.on("connection", (ws) => {
 
     const rawPing = Math.max(0, Math.round(now - client.lastPingSentAt));
     client.pingRawMs = rawPing;
+    if (!Number.isFinite(client.pingBaselineMs)) {
+      client.pingBaselineMs = rawPing;
+    } else if (rawPing <= client.pingBaselineMs) {
+      client.pingBaselineMs = rawPing;
+    } else {
+      client.pingBaselineMs += (rawPing - client.pingBaselineMs) * PING_BASELINE_DECAY;
+    }
+    const normalizedRaw = Math.max(
+      PING_DISPLAY_FLOOR_MS,
+      rawPing - client.pingBaselineMs + PING_DISPLAY_FLOOR_MS,
+    );
     if (!Number.isFinite(client.pingMs)) {
-      client.pingMs = rawPing;
+      client.pingMs = Math.round(normalizedRaw);
       return;
     }
-    const cappedRaw = Math.min(rawPing, Math.round(client.pingMs * PING_SPIKE_CAP_MULTIPLIER));
+    const cappedRaw = Math.min(
+      normalizedRaw,
+      Math.round(client.pingMs * PING_SPIKE_CAP_MULTIPLIER),
+    );
     const smooth = client.pingMs + (cappedRaw - client.pingMs) * PING_SMOOTHING_ALPHA;
     client.pingMs = Math.max(0, Math.round(smooth));
   });

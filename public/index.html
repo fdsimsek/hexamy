@@ -676,11 +676,47 @@
           display: flex;
         }
         body.touch-device #chat-panel {
-          width: min(92vw, 380px);
-          left: 50%;
-          right: auto;
-          transform: translateX(-50%);
-          bottom: 10px;
+          display: none !important;
+        }
+        body.touch-device.landscape-mobile #map-name {
+          display: none;
+        }
+        body.touch-device.landscape-mobile #game-container.show {
+          position: fixed;
+          inset: 0;
+          z-index: 80;
+          justify-content: flex-start;
+          padding-top: 2px;
+          gap: 4px;
+          background: #0f0f1a;
+        }
+        body.touch-device.landscape-mobile #header {
+          margin-bottom: 4px;
+          gap: 14px;
+        }
+        body.touch-device.landscape-mobile .score-panel {
+          padding: 4px 12px;
+        }
+        body.touch-device.landscape-mobile .score-val {
+          font-size: 22px;
+        }
+        body.touch-device.landscape-mobile #timer {
+          font-size: 16px;
+          padding: 5px 12px;
+          min-width: 56px;
+        }
+        body.touch-device.landscape-mobile #mobile-controls {
+          position: fixed;
+          left: 0;
+          right: 0;
+          bottom: 8px;
+          width: 100%;
+          padding: 0 14px;
+          pointer-events: none;
+        }
+        body.touch-device.landscape-mobile #mobile-joystick,
+        body.touch-device.landscape-mobile #mobile-kick-btn {
+          pointer-events: auto;
         }
       }
     </style>
@@ -930,6 +966,8 @@
       const mobileJoystickEl = document.getElementById("mobile-joystick");
       const mobileJoystickKnobEl = document.getElementById("mobile-joystick-knob");
       const mobileKickBtnEl = document.getElementById("mobile-kick-btn");
+      const touchPointerMq = window.matchMedia("(pointer: coarse)");
+      const orientationLandscapeMq = window.matchMedia("(orientation: landscape)");
       const settingsInputs = Array.from(
         document.querySelectorAll("#admin-settings [data-setting]"),
       );
@@ -1154,13 +1192,23 @@
       let canvasPixelScaleX = 1;
       let canvasPixelScaleY = 1;
 
+      function updateMobileLayoutClass() {
+        const isTouch = touchPointerMq.matches;
+        const isLandscapeMobile = isTouch && orientationLandscapeMq.matches;
+        document.body.classList.toggle("touch-device", isTouch);
+        document.body.classList.toggle("landscape-mobile", isLandscapeMobile);
+      }
+
       function resizeCanvas() {
-        const maxDisplayW = Math.min(window.innerWidth * 0.96, 1920);
-        const maxDisplayH = Math.min(window.innerHeight - 170, 1080);
-        const displayScale = Math.max(
-          0.55,
-          Math.min(maxDisplayW / W, maxDisplayH / H),
-        );
+        const isLandscapeMobile = document.body.classList.contains("landscape-mobile");
+        const maxDisplayW = isLandscapeMobile
+          ? window.innerWidth
+          : Math.min(window.innerWidth * 0.96, 1920);
+        const maxDisplayH = isLandscapeMobile
+          ? Math.max(1, window.innerHeight - 52)
+          : Math.min(window.innerHeight - 170, 1080);
+        const minScale = isLandscapeMobile ? 0.1 : 0.55;
+        const displayScale = Math.max(minScale, Math.min(maxDisplayW / W, maxDisplayH / H));
         const displayW = Math.round(W * displayScale);
         const displayH = Math.round(H * displayScale);
         const dpr = Math.min(window.devicePixelRatio || 1, 9);
@@ -1174,7 +1222,13 @@
         canvasPixelScaleY = canvas.height / H;
       }
 
+      updateMobileLayoutClass();
       window.addEventListener("resize", resizeCanvas);
+      window.addEventListener("resize", updateMobileLayoutClass);
+      window.addEventListener("orientationchange", () => {
+        updateMobileLayoutClass();
+        resizeCanvas();
+      });
       resizeCanvas();
 
       const SCALE = 0.58;
@@ -1323,9 +1377,8 @@
       }
 
       function setupMobileControls() {
-        const hasTouch = window.matchMedia("(pointer: coarse)").matches;
+        const hasTouch = touchPointerMq.matches;
         if (!hasTouch) return;
-        document.body.classList.add("touch-device");
         if (!mobileControlsEl || !mobileJoystickEl || !mobileJoystickKnobEl || !mobileKickBtnEl) {
           return;
         }
