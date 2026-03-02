@@ -454,6 +454,89 @@
         border: 1px solid rgba(255, 255, 255, 0.12);
       }
 
+      #controls-settings-btn {
+        position: fixed;
+        top: 14px;
+        right: 14px;
+        z-index: 160;
+        border: 1px solid rgba(255, 255, 255, 0.2);
+        background: rgba(8, 12, 22, 0.78);
+        color: #dbe5ff;
+        border-radius: 9px;
+        padding: 7px 12px;
+        font-size: 12px;
+        font-weight: 700;
+        cursor: pointer;
+      }
+      #controls-settings-btn:hover {
+        background: rgba(18, 24, 40, 0.92);
+      }
+      #controls-settings-modal {
+        position: fixed;
+        inset: 0;
+        z-index: 220;
+        display: none;
+        align-items: center;
+        justify-content: center;
+        background: rgba(2, 4, 10, 0.74);
+      }
+      #controls-settings-modal.show {
+        display: flex;
+      }
+      #controls-settings-modal .panel {
+        width: min(360px, 92vw);
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        border-radius: 12px;
+        background: rgba(10, 16, 30, 0.96);
+        padding: 14px;
+      }
+      #controls-settings-modal .title {
+        color: #c7d6ff;
+        font-weight: 800;
+        margin-bottom: 10px;
+      }
+      #controls-settings-modal .row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        margin-bottom: 8px;
+        font-size: 13px;
+        color: #d7dff6;
+      }
+      .bind-btn {
+        min-width: 86px;
+        border: 1px solid rgba(255, 255, 255, 0.25);
+        border-radius: 8px;
+        background: rgba(255, 255, 255, 0.08);
+        color: #fff;
+        font-size: 12px;
+        font-weight: 700;
+        padding: 7px 10px;
+        cursor: pointer;
+      }
+      .bind-btn.waiting {
+        border-color: #8ea1ff;
+        color: #8ea1ff;
+      }
+      #controls-bind-status {
+        min-height: 18px;
+        margin: 10px 0;
+        font-size: 12px;
+        color: #8ea1ff;
+      }
+      #controls-settings-close {
+        width: 100%;
+        border: 0;
+        border-radius: 8px;
+        background: #5064d9;
+        color: #fff;
+        font-size: 12px;
+        font-weight: 700;
+        padding: 8px;
+        cursor: pointer;
+      }
+
       #goal-flash {
         position: fixed;
         inset: 0;
@@ -946,8 +1029,9 @@
           Oda sahibi maçı başlatır. Her takımda en az 1, en fazla 4 kişi.<br />
           Hareket: <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> veya
           <kbd>↑</kbd><kbd>←</kbd><kbd>↓</kbd><kbd>→</kbd> &nbsp; Pas:
-          <kbd>J</kbd> &nbsp; Ara Pas: <kbd>K</kbd> &nbsp; Şut:
-          <kbd>L</kbd>
+          <kbd id="keybind-pass-lobby">J</kbd> &nbsp; Ara Pas:
+          <kbd id="keybind-through-lobby">K</kbd> &nbsp; Şut:
+          <kbd id="keybind-shoot-lobby">L</kbd>
         </p>
       </div>
     </div>
@@ -977,7 +1061,11 @@
           >
         </div>
         <div class="ctrl-group">
-          <span>Pas: <kbd>J</kbd> · Ara Pas: <kbd>K</kbd> · Şut: <kbd>L</kbd></span>
+          <span
+            >Pas: <kbd id="keybind-pass-game">J</kbd> · Ara Pas:
+            <kbd id="keybind-through-game">K</kbd> · Şut:
+            <kbd id="keybind-shoot-game">L</kbd></span
+          >
         </div>
         <div class="ctrl-group">
           <span
@@ -991,6 +1079,26 @@
           <div id="mobile-joystick-knob"></div>
         </div>
         <button id="mobile-kick-btn" type="button">Şut</button>
+      </div>
+    </div>
+    <button id="controls-settings-btn" type="button">Ayarlar</button>
+    <div id="controls-settings-modal">
+      <div class="panel">
+        <div class="title">Tuş Atamaları</div>
+        <div class="row">
+          <span>Pas</span>
+          <button class="bind-btn" data-action="pass" type="button">J</button>
+        </div>
+        <div class="row">
+          <span>Ara Pas</span>
+          <button class="bind-btn" data-action="throughPass" type="button">K</button>
+        </div>
+        <div class="row">
+          <span>Şut</span>
+          <button class="bind-btn" data-action="shoot" type="button">L</button>
+        </div>
+        <p id="controls-bind-status">Bir aksiyon seçip yeni tuşa bas.</p>
+        <button id="controls-settings-close" type="button">Kapat</button>
       </div>
     </div>
 
@@ -1044,6 +1152,17 @@
       const mobileJoystickEl = document.getElementById("mobile-joystick");
       const mobileJoystickKnobEl = document.getElementById("mobile-joystick-knob");
       const mobileKickBtnEl = document.getElementById("mobile-kick-btn");
+      const controlsSettingsBtnEl = document.getElementById("controls-settings-btn");
+      const controlsSettingsModalEl = document.getElementById("controls-settings-modal");
+      const controlsSettingsCloseEl = document.getElementById("controls-settings-close");
+      const controlsBindStatusEl = document.getElementById("controls-bind-status");
+      const bindButtons = Array.from(document.querySelectorAll(".bind-btn"));
+      const keybindLobbyPassEl = document.getElementById("keybind-pass-lobby");
+      const keybindLobbyThroughEl = document.getElementById("keybind-through-lobby");
+      const keybindLobbyShootEl = document.getElementById("keybind-shoot-lobby");
+      const keybindGamePassEl = document.getElementById("keybind-pass-game");
+      const keybindGameThroughEl = document.getElementById("keybind-through-game");
+      const keybindGameShootEl = document.getElementById("keybind-shoot-game");
       const touchPointerMq = window.matchMedia("(pointer: coarse)");
       const orientationLandscapeMq = window.matchMedia("(orientation: landscape)");
       const settingsInputs = Array.from(
@@ -1061,8 +1180,22 @@
         kickRangeBonus: 4,
         ballDamping: 0.99,
       };
+      const KEYBINDS_STORAGE_KEY = "hexamy-keybinds-v1";
+      const defaultKeyBinds = { pass: "KeyJ", throughPass: "KeyK", shoot: "KeyL" };
+      const blockedActionCodes = new Set([
+        "KeyW",
+        "KeyA",
+        "KeyS",
+        "KeyD",
+        "ArrowUp",
+        "ArrowLeft",
+        "ArrowDown",
+        "ArrowRight",
+      ]);
       let gameSettings = { ...DEFAULT_GAME_SETTINGS };
       let sendSettingsTimer = null;
+      let awaitingBindAction = null;
+      let keyBinds = loadKeyBinds();
 
       ws.onopen = () => console.log("Sunucuya bağlandı");
       ws.onclose = () => {
@@ -1116,6 +1249,113 @@
         );
       }
 
+      function isValidActionCode(code) {
+        return typeof code === "string" && code.startsWith("Key");
+      }
+
+      function codeToLabel(code) {
+        if (!code) return "--";
+        if (code.startsWith("Key")) return code.slice(3).toUpperCase();
+        return code;
+      }
+
+      function sanitizeKeyBinds(next) {
+        const sanitized = { ...defaultKeyBinds };
+        if (!next || typeof next !== "object") return sanitized;
+        for (const action of Object.keys(defaultKeyBinds)) {
+          const code = next[action];
+          if (isValidActionCode(code) && !blockedActionCodes.has(code)) sanitized[action] = code;
+        }
+        const used = new Set();
+        for (const action of Object.keys(sanitized)) {
+          if (used.has(sanitized[action])) sanitized[action] = defaultKeyBinds[action];
+          used.add(sanitized[action]);
+        }
+        return sanitized;
+      }
+
+      function loadKeyBinds() {
+        try {
+          const raw = localStorage.getItem(KEYBINDS_STORAGE_KEY);
+          if (!raw) return { ...defaultKeyBinds };
+          return sanitizeKeyBinds(JSON.parse(raw));
+        } catch {
+          return { ...defaultKeyBinds };
+        }
+      }
+
+      function persistKeyBinds() {
+        localStorage.setItem(KEYBINDS_STORAGE_KEY, JSON.stringify(keyBinds));
+      }
+
+      function updateKeybindUI() {
+        if (keybindLobbyPassEl) keybindLobbyPassEl.textContent = codeToLabel(keyBinds.pass);
+        if (keybindLobbyThroughEl)
+          keybindLobbyThroughEl.textContent = codeToLabel(keyBinds.throughPass);
+        if (keybindLobbyShootEl) keybindLobbyShootEl.textContent = codeToLabel(keyBinds.shoot);
+        if (keybindGamePassEl) keybindGamePassEl.textContent = codeToLabel(keyBinds.pass);
+        if (keybindGameThroughEl)
+          keybindGameThroughEl.textContent = codeToLabel(keyBinds.throughPass);
+        if (keybindGameShootEl) keybindGameShootEl.textContent = codeToLabel(keyBinds.shoot);
+        for (const btn of bindButtons) {
+          const action = btn.dataset.action;
+          if (!action || !(action in keyBinds)) continue;
+          btn.textContent = codeToLabel(keyBinds[action]);
+        }
+      }
+
+      function setBindStatus(text) {
+        if (controlsBindStatusEl) controlsBindStatusEl.textContent = text;
+      }
+
+      function openControlsSettings() {
+        if (!controlsSettingsModalEl) return;
+        awaitingBindAction = null;
+        bindButtons.forEach((btn) => btn.classList.remove("waiting"));
+        setBindStatus("Bir aksiyon seçip yeni tuşa bas.");
+        controlsSettingsModalEl.classList.add("show");
+      }
+
+      function closeControlsSettings() {
+        if (!controlsSettingsModalEl) return;
+        awaitingBindAction = null;
+        bindButtons.forEach((btn) => btn.classList.remove("waiting"));
+        controlsSettingsModalEl.classList.remove("show");
+      }
+
+      function handleBindKeydown(e) {
+        if (!awaitingBindAction) return false;
+        e.preventDefault();
+        e.stopPropagation();
+        if (e.code === "Escape") {
+          awaitingBindAction = null;
+          bindButtons.forEach((btn) => btn.classList.remove("waiting"));
+          setBindStatus("Atama iptal edildi.");
+          return true;
+        }
+        if (!isValidActionCode(e.code) || blockedActionCodes.has(e.code)) {
+          setBindStatus("WASD/ok tuşları ve özel tuşlar atanamaz.");
+          return true;
+        }
+        const alreadyUsedBy = Object.entries(keyBinds).find(
+          ([action, code]) => action !== awaitingBindAction && code === e.code,
+        );
+        if (alreadyUsedBy) {
+          setBindStatus("Bu tuş başka bir aksiyonda kullanılıyor.");
+          return true;
+        }
+        const oldCode = keyBinds[awaitingBindAction];
+        keyBinds[awaitingBindAction] = e.code;
+        keys[oldCode] = false;
+        keys[e.code] = false;
+        persistKeyBinds();
+        updateKeybindUI();
+        bindButtons.forEach((btn) => btn.classList.remove("waiting"));
+        setBindStatus(`Atandı: ${codeToLabel(e.code)}`);
+        awaitingBindAction = null;
+        return true;
+      }
+
       chatFormEl.addEventListener("submit", (e) => {
         e.preventDefault();
         const text = chatInputEl.value.trim();
@@ -1141,6 +1381,9 @@
       function onWelcome(msg) {
         myId = msg.id;
         currentHostId = msg.hostId;
+        if (Number.isFinite(msg.stateTickMs)) {
+          serverTickMs = Math.max(12, Number(msg.stateTickMs));
+        }
         if (msg.settings) applySettings(msg.settings);
         refreshSettingsUI();
       }
@@ -1177,6 +1420,21 @@
         if (!isMeHost()) return;
         send({ type: "resetSettings" });
       });
+      controlsSettingsBtnEl?.addEventListener("click", openControlsSettings);
+      controlsSettingsCloseEl?.addEventListener("click", closeControlsSettings);
+      controlsSettingsModalEl?.addEventListener("pointerdown", (e) => {
+        if (e.target === controlsSettingsModalEl) closeControlsSettings();
+      });
+      for (const btn of bindButtons) {
+        btn.addEventListener("click", () => {
+          const action = btn.dataset.action;
+          if (!action || !(action in keyBinds)) return;
+          awaitingBindAction = action;
+          bindButtons.forEach((it) => it.classList.toggle("waiting", it === btn));
+          setBindStatus(`${btn.previousElementSibling?.textContent || "Aksiyon"} için tuşa bas...`);
+        });
+      }
+      updateKeybindUI();
       setupSettingsControls();
       setupMobileControls();
 
@@ -1271,6 +1529,11 @@
         CY = H / 2;
       let canvasPixelScaleX = 1;
       let canvasPixelScaleY = 1;
+      let renderScaleQuality = 1;
+      let lastQualityAdjustAt = 0;
+      const RENDER_SCALE_MIN = 0.68;
+      const RENDER_SCALE_MAX = 1;
+      const QUALITY_ADJUST_COOLDOWN_MS = 2000;
 
       function updateMobileLayoutClass() {
         const isTouch = touchPointerMq.matches;
@@ -1291,7 +1554,9 @@
         const displayScale = Math.max(minScale, Math.min(maxDisplayW / W, maxDisplayH / H));
         const displayW = Math.round(W * displayScale);
         const displayH = Math.round(H * displayScale);
-        const dpr = Math.min(window.devicePixelRatio || 1, 9);
+        const maxDpr = isLandscapeMobile ? 1.35 : 2;
+        const baseDpr = Math.min(window.devicePixelRatio || 1, maxDpr);
+        const dpr = Math.max(1, baseDpr * renderScaleQuality);
 
         canvas.style.width = `${displayW}px`;
         canvas.style.height = `${displayH}px`;
@@ -1349,7 +1614,7 @@
       let prevState = null;
       let currState = null;
       let stateTimestamp = 0;
-      const SERVER_TICK_MS = 50; // 1000/20 = 50ms between server broadcasts
+      let serverTickMs = 50;
       let gamePlayers = [];
       let gameBall = { x: CX, y: CY, vx: 0, vy: 0, r: BALL_R };
       let rendering = false;
@@ -1383,6 +1648,11 @@
         shoot: false,
       };
       document.addEventListener("keydown", (e) => {
+        if (handleBindKeydown(e)) return;
+        if (controlsSettingsModalEl?.classList.contains("show")) {
+          if (e.code === "Escape") closeControlsSettings();
+          return;
+        }
         if (isTextEntryFocused()) {
           if (e.code === "Escape" && document.activeElement === chatInputEl) {
             chatInputEl.blur();
@@ -1421,9 +1691,9 @@
         keys["ArrowLeft"] = false;
         keys["ArrowDown"] = false;
         keys["ArrowRight"] = false;
-        keys["KeyJ"] = false;
-        keys["KeyK"] = false;
-        keys["KeyL"] = false;
+        keys[keyBinds.pass] = false;
+        keys[keyBinds.throughPass] = false;
+        keys[keyBinds.shoot] = false;
         mobileInputState.up = false;
         mobileInputState.down = false;
         mobileInputState.left = false;
@@ -1443,9 +1713,9 @@
             down: !!(keys["KeyS"] || keys["ArrowDown"] || mobileInputState.down),
             left: !!(keys["KeyA"] || keys["ArrowLeft"] || mobileInputState.left),
             right: !!(keys["KeyD"] || keys["ArrowRight"] || mobileInputState.right),
-            pass: !!(keys["KeyJ"] || mobileInputState.pass),
-            throughPass: !!(keys["KeyK"] || mobileInputState.throughPass),
-            shoot: !!(keys["KeyL"] || mobileInputState.shoot),
+            pass: !!(keys[keyBinds.pass] || mobileInputState.pass),
+            throughPass: !!(keys[keyBinds.throughPass] || mobileInputState.throughPass),
+            shoot: !!(keys[keyBinds.shoot] || mobileInputState.shoot),
           },
         });
       }
@@ -1725,7 +1995,7 @@
         }
 
         const elapsed = now - stateTimestamp;
-        const t = Math.min(Math.max(elapsed / SERVER_TICK_MS, 0), 1.2);
+        const t = Math.min(Math.max(elapsed / serverTickMs, 0), 1.2);
 
         gameBall = {
           x: prevState.ball.x + (currState.ball.x - prevState.ball.x) * t,
@@ -1776,7 +2046,12 @@
         document.body.classList.add("goal-chaos");
 
         const emojis = msg.team === "red" ? ["🤣", "🔥", "🧨", "🟥"] : ["🤣", "⚡", "🎯", "🟦"];
-        for (let i = 0; i < 14; i++) {
+        const isTouch = document.body.classList.contains("touch-device");
+        const burstCount = Math.max(
+          isTouch ? 4 : 7,
+          Math.round((isTouch ? 10 : 16) * renderScaleQuality),
+        );
+        for (let i = 0; i < burstCount; i++) {
           const burst = document.createElement("span");
           burst.className = "troll-burst";
           burst.textContent = emojis[Math.floor(Math.random() * emojis.length)];
@@ -2174,6 +2449,18 @@
             if (fpsSampleElapsed >= 300) {
               const avgFps = Math.round(fpsSampleSum / fpsSampleCount);
               if (fpsValueEl) fpsValueEl.textContent = String(avgFps);
+              const nowMs = performance.now();
+              if (nowMs - lastQualityAdjustAt > QUALITY_ADJUST_COOLDOWN_MS) {
+                if (avgFps < 52 && renderScaleQuality > RENDER_SCALE_MIN) {
+                  renderScaleQuality = Math.max(RENDER_SCALE_MIN, renderScaleQuality - 0.08);
+                  lastQualityAdjustAt = nowMs;
+                  resizeCanvas();
+                } else if (avgFps > 58 && renderScaleQuality < RENDER_SCALE_MAX) {
+                  renderScaleQuality = Math.min(RENDER_SCALE_MAX, renderScaleQuality + 0.04);
+                  lastQualityAdjustAt = nowMs;
+                  resizeCanvas();
+                }
+              }
               fpsSampleSum = 0;
               fpsSampleCount = 0;
               fpsSampleElapsed = 0;

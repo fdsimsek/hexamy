@@ -11,7 +11,11 @@ const MAX_CONNECTIONS = Number(process.env.MAX_CONNECTIONS || 64);
 const MAX_BUFFERED_AMOUNT_BYTES = Number(
   process.env.MAX_BUFFERED_AMOUNT_BYTES || 512 * 1024,
 );
+const STATE_BROADCAST_HZ = Number(process.env.STATE_BROADCAST_HZ || 30);
+const STATE_BROADCAST_MS = Math.max(12, 1000 / Math.max(10, STATE_BROADCAST_HZ));
 const PING_INTERVAL_MS = Number(process.env.PING_INTERVAL_MS || 500);
+const PING_SCAN_INTERVAL_MS = Number(process.env.PING_SCAN_INTERVAL_MS || 100);
+const PING_JITTER_MS = Number(process.env.PING_JITTER_MS || 140);
 const PONG_TIMEOUT_MS = Number(process.env.PONG_TIMEOUT_MS || 6000);
 const PING_SMOOTHING_ALPHA = Number(process.env.PING_SMOOTHING_ALPHA || 0.25);
 const PING_SPIKE_CAP_MULTIPLIER = Number(process.env.PING_SPIKE_CAP_MULTIPLIER || 1.5);
@@ -33,6 +37,7 @@ const RATE_LIMIT_PER_WINDOW = {
 const wss = new WebSocketServer({
   server,
   maxPayload: MAX_WS_PAYLOAD_BYTES,
+  perMessageDeflate: false,
 });
 
 app.use(express.static(path.join(__dirname, "public")));
@@ -649,7 +654,7 @@ function startGameLoop() {
   if (gameLoopInterval) clearInterval(gameLoopInterval);
   if (broadcastInterval) clearInterval(broadcastInterval);
   gameLoopInterval = setInterval(gameUpdate, 1000 / 60);
-  broadcastInterval = setInterval(broadcastState, 1000 / 20);
+  broadcastInterval = setInterval(broadcastState, STATE_BROADCAST_MS);
 }
 
 function stopGameLoop() {
@@ -784,14 +789,17 @@ function startPingLoop() {
         continue;
       }
       if (ws.readyState === 1 && !client.awaitingPong) {
+        if (now < client.nextPingAt) continue;
         if (now - client.lastPingSentAt < PING_MIN_GAP_MS) continue;
         client.awaitingPong = true;
         client.lastPingSentAt = now;
         client.lastPingHrNs = process.hrtime.bigint();
+        client.nextPingAt =
+          now + PING_INTERVAL_MS + Math.floor(Math.random() * Math.max(1, PING_JITTER_MS));
         ws.ping();
       }
     }
-  }, PING_INTERVAL_MS);
+  }, PING_SCAN_INTERVAL_MS);
 }
 
 function isRateLimited(client, type) {
@@ -835,6 +843,7 @@ wss.on("connection", (ws) => {
     lastPongAt: Date.now(),
     lastPingSentAt: 0,
     lastPingHrNs: null,
+    nextPingAt: Date.now() + Math.floor(Math.random() * Math.max(1, PING_INTERVAL_MS)),
     awaitingPong: false,
     rateLimitWindowStart: Date.now(),
     rateLimitCounts: {},
@@ -848,7 +857,15 @@ wss.on("connection", (ws) => {
 
   if (!hostId) hostId = id;
 
-  ws.send(JSON.stringify({ type: "welcome", id, hostId, settings: gameSettings }));
+  ws.send(
+    JSON.stringify({
+      type: "welcome",
+      id,
+      hostId,
+      settings: gameSettings,
+      stateTickMs: STATE_BROADCAST_MS,
+    }),
+  );
   sendLobbyUpdate();
 
   ws.on("message", (raw) => {
