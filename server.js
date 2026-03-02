@@ -32,6 +32,7 @@ const GOAL_DEPTH = 55 * SCALE;
 const GOAL_Y1 = CY - GOAL_HH;
 const GOAL_Y2 = CY + GOAL_HH;
 const GOAL_POST_R = 8.8 * SCALE;
+const KICKOFF_R = 88 * SCALE;
 
 const PLAYER_R = 15 * SCALE * 1.35;
 const BALL_R = 7 * SCALE;
@@ -88,6 +89,9 @@ let gameLoopInterval = null;
 let broadcastInterval = null;
 let pingInterval = null;
 let gameSettings = { ...DEFAULT_GAME_SETTINGS };
+let kickoffPending = false;
+let kickoffTeam = "red";
+let nextKickoffTeam = "red";
 
 // ============ PHYSICS ============
 
@@ -146,6 +150,21 @@ function resetPositions() {
   ball.vy = 0;
 }
 
+function spawnPlayerForClient(client) {
+  if (!client?.player || !client.team) return;
+  const teamPlayers = [...clients.values()].filter(
+    (c) => c.team === client.team && c.player,
+  );
+  const idx = Math.max(0, teamPlayers.findIndex((c) => c.id === client.id));
+  const spacing = 45;
+  const x = client.team === "red" ? CX - SPAWN_DIST : CX + SPAWN_DIST;
+  const y = CY + (idx - (teamPlayers.length - 1) / 2) * spacing;
+  client.player.x = x;
+  client.player.y = y;
+  client.player.vx = 0;
+  client.player.vy = 0;
+}
+
 function handlePlayerInput(client) {
   const p = client.player;
   const keys = client.keys;
@@ -178,33 +197,50 @@ function handlePlayerInput(client) {
 }
 
 function circleCollision(a, b) {
-  const dx = b.x - a.x,
-    dy = b.y - a.y;
-  const dist = Math.hypot(dx, dy);
+  let dx = b.x - a.x;
+  let dy = b.y - a.y;
+  let dist = Math.hypot(dx, dy);
   const minDist = a.r + b.r;
-  if (dist < minDist && dist > 0.001) {
-    const nx = dx / dist,
-      ny = dy / dist;
-    const overlap = minDist - dist;
-    const aIM = a.isBall ? BALL_INV_MASS : PLAYER_INV_MASS;
-    const bIM = b.isBall ? BALL_INV_MASS : PLAYER_INV_MASS;
-    const totalIM = aIM + bIM;
+  if (dist >= minDist) return;
 
-    a.x -= nx * overlap * (aIM / totalIM);
-    a.y -= ny * overlap * (aIM / totalIM);
-    b.x += nx * overlap * (bIM / totalIM);
-    b.y += ny * overlap * (bIM / totalIM);
-
-    const dvx = a.vx - b.vx,
-      dvy = a.vy - b.vy;
-    const dvn = dvx * nx + dvy * ny;
-    if (dvn > 0) {
-      const j = dvn / totalIM;
-      a.vx -= j * aIM * nx;
-      a.vy -= j * aIM * ny;
-      b.vx += j * bIM * nx;
-      b.vy += j * bIM * ny;
+  if (dist <= 0.000001) {
+    const rvx = b.vx - a.vx;
+    const rvy = b.vy - a.vy;
+    const rvLen = Math.hypot(rvx, rvy);
+    if (rvLen > 0.000001) {
+      dx = rvx;
+      dy = rvy;
+      dist = rvLen;
+    } else {
+      dx = 1;
+      dy = 0;
+      dist = 1;
     }
+  }
+
+  const nx = dx / dist;
+  const ny = dy / dist;
+  const aIM = a.isBall ? BALL_INV_MASS : PLAYER_INV_MASS;
+  const bIM = b.isBall ? BALL_INV_MASS : PLAYER_INV_MASS;
+  const totalIM = aIM + bIM;
+
+  // Keep a tiny gap so circles never visually sink into each other.
+  const targetDist = minDist + 0.001;
+  const overlap = targetDist - dist;
+  a.x -= nx * overlap * (aIM / totalIM);
+  a.y -= ny * overlap * (aIM / totalIM);
+  b.x += nx * overlap * (bIM / totalIM);
+  b.y += ny * overlap * (bIM / totalIM);
+
+  const dvx = a.vx - b.vx;
+  const dvy = a.vy - b.vy;
+  const dvn = dvx * nx + dvy * ny;
+  if (dvn > 0) {
+    const j = dvn / totalIM;
+    a.vx -= j * aIM * nx;
+    a.vy -= j * aIM * ny;
+    b.vx += j * bIM * nx;
+    b.vy += j * bIM * ny;
   }
 }
 
@@ -316,13 +352,22 @@ function handleGoalCelebration() {
   }
   goalScoredState = null;
   resetPositions();
+  kickoffPending = true;
+  kickoffTeam = nextKickoffTeam;
   return false;
 }
 
 function processKicks(activePlayers) {
   for (const { client } of activePlayers) {
+    if (kickoffPending && client.team !== kickoffTeam) {
+      if (client.kickCooldown > 0) client.kickCooldown--;
+      continue;
+    }
     if (client.keys?.kick && client.kickCooldown <= 0) {
-      if (kickBall(client.player)) client.kickCooldown = 8;
+      if (kickBall(client.player)) {
+        client.kickCooldown = 8;
+        if (kickoffPending && client.team === kickoffTeam) kickoffPending = false;
+      }
     }
     if (client.kickCooldown > 0) client.kickCooldown--;
   }
@@ -340,14 +385,53 @@ function applyMovement(activePlayers) {
 }
 
 function resolveCollisions(activePlayers) {
-  for (const { player } of activePlayers) circleCollision(player, ball);
-  for (let i = 0; i < activePlayers.length; i++) {
-    for (let j = i + 1; j < activePlayers.length; j++) {
-      circleCollision(activePlayers[i].player, activePlayers[j].player);
+  for (const { client, player } of activePlayers) {
+    if (kickoffPending && client.team !== kickoffTeam) continue;
+    circleCollision(player, ball);
+  }
+  for (let pass = 0; pass < 3; pass++) {
+    for (let i = 0; i < activePlayers.length; i++) {
+      for (let j = i + 1; j < activePlayers.length; j++) {
+        circleCollision(activePlayers[i].player, activePlayers[j].player);
+      }
     }
   }
+  if (kickoffPending && Math.hypot(ball.vx, ball.vy) > 0.05) kickoffPending = false;
   for (const { player } of activePlayers) constrainObj(player);
   constrainObj(ball);
+}
+
+function applyKickoffWaitingRules(activePlayers) {
+  if (!kickoffPending) return;
+  for (const { client, player } of activePlayers) {
+    if (client.team === kickoffTeam) continue;
+
+    // Non-kickoff team cannot cross the halfway line.
+    if (client.team === "red" && player.x + player.r > CX) {
+      player.x = CX - player.r;
+      if (player.vx > 0) player.vx *= -0.3;
+    } else if (client.team === "blue" && player.x - player.r < CX) {
+      player.x = CX + player.r;
+      if (player.vx < 0) player.vx *= -0.3;
+    }
+
+    // Non-kickoff team cannot enter the center circle before play starts.
+    const dx = player.x - CX;
+    const dy = player.y - CY;
+    const minDist = KICKOFF_R + player.r;
+    const dist = Math.hypot(dx, dy);
+    if (dist < minDist) {
+      const nx = dist > 0.001 ? dx / dist : (client.team === "red" ? -1 : 1);
+      const ny = dist > 0.001 ? dy / dist : 0;
+      player.x = CX + nx * minDist;
+      player.y = CY + ny * minDist;
+      const dot = player.vx * nx + player.vy * ny;
+      if (dot < 0) {
+        player.vx -= dot * nx;
+        player.vy -= dot * ny;
+      }
+    }
+  }
 }
 
 function checkGoalScored() {
@@ -356,6 +440,7 @@ function checkGoalScored() {
   if (!goal) return;
   if (goal === "red") scoreRed++;
   else scoreBlue++;
+  nextKickoffTeam = goal === "red" ? "blue" : "red";
   goalScoredState = goal;
   goalScoredTimer = GOAL_CELEBRATION_FRAMES;
   broadcast({ type: "goal", team: goal, scoreRed, scoreBlue });
@@ -372,6 +457,7 @@ function gameUpdate() {
   processKicks(activePlayers);
   applyMovement(activePlayers);
   resolveCollisions(activePlayers);
+  applyKickoffWaitingRules(activePlayers);
   checkGoalScored();
 }
 
@@ -408,6 +494,8 @@ function broadcastState() {
     scoreBlue,
     time: gameTime,
     goalScoredState,
+    kickoffPending,
+    kickoffTeam,
   });
 }
 
@@ -441,6 +529,9 @@ function startGameLoop() {
   gameTime = 0;
   goalScoredState = null;
   goalScoredTimer = 0;
+  kickoffPending = true;
+  kickoffTeam = "red";
+  nextKickoffTeam = "red";
 
   ball = { x: CX, y: CY, vx: 0, vy: 0, r: BALL_R, isBall: true };
 
@@ -489,11 +580,26 @@ function handleJoin(client, msg) {
 }
 
 function handleTeam(client, msg) {
-  if (!isLobbyOrEnded()) return;
+  if (!["red", "blue"].includes(msg.team)) return;
+  if (gameState === "playing" && client.team) return;
   const teamCount = [...clients.values()].filter(
     (c) => c.team === msg.team,
   ).length;
-  if (teamCount < 4) client.team = msg.team;
+  if (teamCount >= 4) return;
+  client.team = msg.team;
+  if (gameState === "playing" && !client.player) {
+    client.player = {
+      x: 0,
+      y: 0,
+      vx: 0,
+      vy: 0,
+      r: PLAYER_R,
+      kicking: false,
+      isBall: false,
+    };
+    client.kickCooldown = 0;
+    spawnPlayerForClient(client);
+  }
   sendLobbyUpdate();
 }
 
@@ -537,6 +643,20 @@ function handleResetSettings(client) {
   sendLobbyUpdate();
 }
 
+function handleChat(client, msg) {
+  const text = String(msg?.text ?? "")
+    .trim()
+    .slice(0, 180);
+  if (!text) return;
+  broadcast({
+    type: "chat",
+    fromId: client.id,
+    fromName: client.name || `Oyuncu ${client.id}`,
+    text,
+    time: Date.now(),
+  });
+}
+
 const messageHandlers = {
   join: handleJoin,
   team: handleTeam,
@@ -545,6 +665,7 @@ const messageHandlers = {
   input: handleInput,
   settings: handleSettings,
   resetSettings: handleResetSettings,
+  chat: handleChat,
 };
 
 function handleClientMessage(client, msg) {
