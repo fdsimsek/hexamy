@@ -33,6 +33,17 @@ LAN:    http://<senin-ip-adresin>:3000
 - **Ayni bilgisayar:** Tarayicida `http://localhost:3000` ac
 - **Ayni agdaki arkadaslar:** LAN adresini paylas, tarayicidan acsinlar
 
+### Port 3000 zaten kullanimda hatasi
+
+`npm start` yazinca "EADDRINUSE: address already in use" hatasi aliyorsan, once 3000 portunu kullanan islemi kapat:
+
+**Windows (PowerShell):**
+```powershell
+Get-NetTCPConnection -LocalPort 3000 -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force }
+```
+
+Sonra tekrar `npm start` calistir.
+
 ## Kontroller
 
 | Aksiyon | Tuslar |
