@@ -46,7 +46,7 @@ const PORT = Number(process.env.PORT || 3000);
 
 // ============ GAME CONSTANTS (from .hbs map) ============
 
-const SCALE = 0.58;
+const SCALE = 0.64;
 const W = 1100,
   H = 640;
 const CX = W / 2,

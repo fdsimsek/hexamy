@@ -938,8 +938,8 @@
             <label>Oyuncu Hızı</label>
             <input
               type="range"
-              min="0.0174"
-              max="0.116"
+              min="0.0192"
+              max="0.128"
               step="0.001"
               data-setting="playerAccel"
             />
@@ -960,8 +960,8 @@
             <label>Şut Sırasında Hız</label>
             <input
               type="range"
-              min="0.0116"
-              max="0.1044"
+              min="0.0128"
+              max="0.1152"
               step="0.001"
               data-setting="playerKickAccel"
             />
@@ -988,8 +988,8 @@
             <label>Topa Vurma Gücü</label>
             <input
               type="range"
-              min="1.16"
-              max="6.96"
+              min="1.28"
+              max="7.68"
               step="0.01"
               data-setting="kickStrength"
             />
@@ -1172,11 +1172,11 @@
         document.querySelectorAll("[data-setting-value]"),
       );
       const DEFAULT_GAME_SETTINGS = {
-        playerAccel: 0.058,
+        playerAccel: 0.064,
         playerDamping: 0.96,
-        playerKickAccel: 0.0406,
+        playerKickAccel: 0.0448,
         playerKickDamping: 0.96,
-        kickStrength: 3.48,
+        kickStrength: 3.84,
         kickRangeBonus: 4,
         ballDamping: 0.99,
       };
@@ -1579,7 +1579,7 @@
       });
       resizeCanvas();
 
-      const SCALE = 0.58;
+      const SCALE = 0.64;
       const FIELD_HW = 594.56 * SCALE;
       const FIELD_HH = 297.28 * SCALE;
       const FIELD_X1 = CX - FIELD_HW;
