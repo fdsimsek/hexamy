@@ -1,22 +1,24 @@
-const express = require('express');
-const http = require('node:http');
-const { WebSocketServer } = require('ws');
-const os = require('node:os');
-const path = require('node:path');
+const express = require("express");
+const http = require("node:http");
+const { WebSocketServer } = require("ws");
+const os = require("node:os");
+const path = require("node:path");
 
 const app = express();
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server });
 
-app.use(express.static(path.join(__dirname, 'public')));
+app.use(express.static(path.join(__dirname, "public")));
 
 const PORT = 3000;
 
 // ============ GAME CONSTANTS (from .hbs map) ============
 
 const SCALE = 0.58;
-const W = 1100, H = 640;
-const CX = W / 2, CY = H / 2;
+const W = 1100,
+  H = 640;
+const CX = W / 2,
+  CY = H / 2;
 
 const FIELD_HW = 594.56 * SCALE;
 const FIELD_HH = 297.28 * SCALE;
@@ -33,15 +35,28 @@ const GOAL_POST_R = 8.8 * SCALE;
 
 const PLAYER_R = 15 * SCALE * 1.35;
 const BALL_R = 7 * SCALE;
+const PLAYER_OUTSIDE_MARGIN = 60 * SCALE;
 
-const PLAYER_ACCEL = 0.1 * SCALE;
-const PLAYER_DAMPING = 0.96;
-const PLAYER_KICK_ACCEL = 0.07 * SCALE;
-const PLAYER_KICK_DAMPING = 0.96;
-const KICK_STRENGTH = 6 * SCALE;
-const KICK_RANGE = PLAYER_R + BALL_R + 4;
+const DEFAULT_GAME_SETTINGS = {
+  playerAccel: 0.1 * SCALE,
+  playerDamping: 0.96,
+  playerKickAccel: 0.07 * SCALE,
+  playerKickDamping: 0.96,
+  kickStrength: 6 * SCALE,
+  kickRangeBonus: 4,
+  ballDamping: 0.99,
+};
 
-const BALL_DAMPING = 0.99;
+const SETTINGS_LIMITS = {
+  playerAccel: [0.03 * SCALE, 0.2 * SCALE],
+  playerDamping: [0.85, 0.995],
+  playerKickAccel: [0.02 * SCALE, 0.18 * SCALE],
+  playerKickDamping: [0.85, 0.995],
+  kickStrength: [2 * SCALE, 12 * SCALE],
+  kickRangeBonus: [0, 24],
+  ballDamping: [0.93, 0.999],
+};
+
 const PLAYER_INV_MASS = 0.5;
 const BALL_INV_MASS = 1;
 
@@ -61,7 +76,7 @@ const goalPosts = [
 let nextId = 1;
 const clients = new Map(); // ws -> { id, name, team, keys, kickCooldown }
 
-let gameState = 'lobby'; // 'lobby' | 'playing' | 'ended'
+let gameState = "lobby"; // 'lobby' | 'playing' | 'ended'
 let hostId = null;
 let ball = { x: CX, y: CY, vx: 0, vy: 0, r: BALL_R };
 let scoreRed = 0;
@@ -71,9 +86,25 @@ let goalScoredState = null;
 let goalScoredTimer = 0;
 let gameLoopInterval = null;
 let broadcastInterval = null;
-let physicsTick = 0;
+let pingInterval = null;
+let gameSettings = { ...DEFAULT_GAME_SETTINGS };
 
 // ============ PHYSICS ============
+
+function clamp(v, min, max) {
+  return Math.max(min, Math.min(max, v));
+}
+
+function sanitizeSettings(rawSettings) {
+  const next = { ...gameSettings };
+  if (!rawSettings || typeof rawSettings !== "object") return next;
+  for (const [key, [min, max]] of Object.entries(SETTINGS_LIMITS)) {
+    const value = Number(rawSettings[key]);
+    if (!Number.isFinite(value)) continue;
+    next[key] = clamp(value, min, max);
+  }
+  return next;
+}
 
 function getPlayersArray() {
   const players = [];
@@ -89,25 +120,30 @@ function resetPositions() {
   const reds = [];
   const blues = [];
   for (const [, c] of clients) {
-    if (c.team === 'red' && c.player) reds.push(c.player);
-    if (c.team === 'blue' && c.player) blues.push(c.player);
+    if (c.team === "red" && c.player) reds.push(c.player);
+    if (c.team === "blue" && c.player) blues.push(c.player);
   }
 
   const redSpacing = reds.length > 1 ? 50 : 0;
   reds.forEach((p, i) => {
     p.x = CX - SPAWN_DIST;
     p.y = CY + (i - (reds.length - 1) / 2) * redSpacing;
-    p.vx = 0; p.vy = 0;
+    p.vx = 0;
+    p.vy = 0;
   });
 
   const blueSpacing = blues.length > 1 ? 50 : 0;
   blues.forEach((p, i) => {
     p.x = CX + SPAWN_DIST;
     p.y = CY + (i - (blues.length - 1) / 2) * blueSpacing;
-    p.vx = 0; p.vy = 0;
+    p.vx = 0;
+    p.vy = 0;
   });
 
-  ball.x = CX; ball.y = CY; ball.vx = 0; ball.vy = 0;
+  ball.x = CX;
+  ball.y = CY;
+  ball.vx = 0;
+  ball.vy = 0;
 }
 
 function handlePlayerInput(client) {
@@ -115,18 +151,22 @@ function handlePlayerInput(client) {
   const keys = client.keys;
   if (!p || !keys) return;
 
-  let ax = 0, ay = 0;
+  let ax = 0,
+    ay = 0;
   if (keys.up) ay -= 1;
   if (keys.down) ay += 1;
   if (keys.left) ax -= 1;
   if (keys.right) ax += 1;
 
-  if (ax !== 0 && ay !== 0) { ax *= 0.7071; ay *= 0.7071; }
+  if (ax !== 0 && ay !== 0) {
+    ax *= 0.7071;
+    ay *= 0.7071;
+  }
 
   const isKicking = keys.kick;
   p.kicking = isKicking;
-  const accel = isKicking ? PLAYER_KICK_ACCEL : PLAYER_ACCEL;
-  let damp = isKicking ? PLAYER_KICK_DAMPING : PLAYER_DAMPING;
+  const accel = isKicking ? gameSettings.playerKickAccel : gameSettings.playerAccel;
+  let damp = isKicking ? gameSettings.playerKickDamping : gameSettings.playerDamping;
 
   if (ax !== 0 || ay !== 0) {
     const dot = p.vx * ax + p.vy * ay;
@@ -138,11 +178,13 @@ function handlePlayerInput(client) {
 }
 
 function circleCollision(a, b) {
-  const dx = b.x - a.x, dy = b.y - a.y;
+  const dx = b.x - a.x,
+    dy = b.y - a.y;
   const dist = Math.hypot(dx, dy);
   const minDist = a.r + b.r;
   if (dist < minDist && dist > 0.001) {
-    const nx = dx / dist, ny = dy / dist;
+    const nx = dx / dist,
+      ny = dy / dist;
     const overlap = minDist - dist;
     const aIM = a.isBall ? BALL_INV_MASS : PLAYER_INV_MASS;
     const bIM = b.isBall ? BALL_INV_MASS : PLAYER_INV_MASS;
@@ -153,7 +195,8 @@ function circleCollision(a, b) {
     b.x += nx * overlap * (bIM / totalIM);
     b.y += ny * overlap * (bIM / totalIM);
 
-    const dvx = a.vx - b.vx, dvy = a.vy - b.vy;
+    const dvx = a.vx - b.vx,
+      dvy = a.vy - b.vy;
     const dvn = dvx * nx + dvy * ny;
     if (dvn > 0) {
       const j = dvn / totalIM;
@@ -166,12 +209,15 @@ function circleCollision(a, b) {
 }
 
 function kickBall(player) {
-  const dx = ball.x - player.x, dy = ball.y - player.y;
+  const dx = ball.x - player.x,
+    dy = ball.y - player.y;
   const dist = Math.hypot(dx, dy);
-  if (dist < KICK_RANGE && dist > 0.001) {
-    const nx = dx / dist, ny = dy / dist;
-    ball.vx += nx * KICK_STRENGTH;
-    ball.vy += ny * KICK_STRENGTH;
+  const kickRange = PLAYER_R + BALL_R + gameSettings.kickRangeBonus;
+  if (dist < kickRange && dist > 0.001) {
+    const nx = dx / dist,
+      ny = dy / dist;
+    ball.vx += nx * gameSettings.kickStrength;
+    ball.vy += ny * gameSettings.kickStrength;
     return true;
   }
   return false;
@@ -183,18 +229,20 @@ function clampAxis(obj, pos, limit, prop, velProp, sign) {
 }
 
 function constrainGoalZone(obj, xMin, xMax, yMin, yMax) {
-  if (obj.x - obj.r < xMin) clampAxis(obj, obj.x, xMin, 'x', 'vx', 1);
-  if (obj.x + obj.r > xMax) clampAxis(obj, obj.x, xMax, 'x', 'vx', -1);
-  if (obj.y - obj.r < yMin) clampAxis(obj, obj.y, yMin, 'y', 'vy', 1);
-  if (obj.y + obj.r > yMax) clampAxis(obj, obj.y, yMax, 'y', 'vy', -1);
+  if (obj.x - obj.r < xMin) clampAxis(obj, obj.x, xMin, "x", "vx", 1);
+  if (obj.x + obj.r > xMax) clampAxis(obj, obj.x, xMax, "x", "vx", -1);
+  if (obj.y - obj.r < yMin) clampAxis(obj, obj.y, yMin, "y", "vy", 1);
+  if (obj.y + obj.r > yMax) clampAxis(obj, obj.y, yMax, "y", "vy", -1);
 }
 
 function constrainPostCollision(obj, post) {
-  const dx = obj.x - post.x, dy = obj.y - post.y;
+  const dx = obj.x - post.x,
+    dy = obj.y - post.y;
   const dist = Math.hypot(dx, dy);
   const minD = obj.r + post.r;
   if (dist >= minD || dist <= 0.001) return;
-  const nx = dx / dist, ny = dy / dist;
+  const nx = dx / dist,
+    ny = dy / dist;
   obj.x = post.x + nx * minD;
   obj.y = post.y + ny * minD;
   const dot = obj.vx * nx + obj.vy * ny;
@@ -205,6 +253,7 @@ function constrainPostCollision(obj, post) {
 }
 
 function constrainObj(obj) {
+  const outsideMargin = obj.isBall ? 0 : PLAYER_OUTSIDE_MARGIN;
   const pastLeftX = obj.x - obj.r < FIELD_X1;
   const pastRightX = obj.x + obj.r > FIELD_X2;
   const inGoalY = obj.y + obj.r > GOAL_Y1 && obj.y - obj.r < GOAL_Y2;
@@ -213,19 +262,37 @@ function constrainObj(obj) {
   const inRightGoal = pastRightX && inGoalY;
 
   if (inLeftGoal) {
-    constrainGoalZone(obj, FIELD_X1 - GOAL_DEPTH, Infinity, GOAL_Y1, GOAL_Y2);
+    constrainGoalZone(
+      obj,
+      FIELD_X1 - GOAL_DEPTH - outsideMargin,
+      Infinity,
+      GOAL_Y1 - outsideMargin,
+      GOAL_Y2 + outsideMargin,
+    );
   } else if (inRightGoal) {
-    constrainGoalZone(obj, -Infinity, FIELD_X2 + GOAL_DEPTH, GOAL_Y1, GOAL_Y2);
+    constrainGoalZone(
+      obj,
+      -Infinity,
+      FIELD_X2 + GOAL_DEPTH + outsideMargin,
+      GOAL_Y1 - outsideMargin,
+      GOAL_Y2 + outsideMargin,
+    );
   } else {
-    constrainGoalZone(obj, FIELD_X1, FIELD_X2, FIELD_Y1, FIELD_Y2);
+    constrainGoalZone(
+      obj,
+      FIELD_X1 - outsideMargin,
+      FIELD_X2 + outsideMargin,
+      FIELD_Y1 - outsideMargin,
+      FIELD_Y2 + outsideMargin,
+    );
   }
 
   for (const post of goalPosts) constrainPostCollision(obj, post);
 }
 
 function isGoal() {
-  if (ball.x < FIELD_X1 && ball.y > GOAL_Y1 && ball.y < GOAL_Y2) return 'blue';
-  if (ball.x > FIELD_X2 && ball.y > GOAL_Y1 && ball.y < GOAL_Y2) return 'red';
+  if (ball.x < FIELD_X1 && ball.y > GOAL_Y1 && ball.y < GOAL_Y2) return "blue";
+  if (ball.x > FIELD_X2 && ball.y > GOAL_Y1 && ball.y < GOAL_Y2) return "red";
   return null;
 }
 
@@ -234,11 +301,17 @@ function handleGoalCelebration() {
   if (goalScoredTimer > 0) return false;
 
   let winner = null;
-  if (scoreRed >= WIN_SCORE) winner = 'red';
-  else if (scoreBlue >= WIN_SCORE) winner = 'blue';
+  if (scoreRed >= WIN_SCORE) winner = "red";
+  else if (scoreBlue >= WIN_SCORE) winner = "blue";
   if (winner) {
-    gameState = 'ended';
-    broadcast({ type: 'winner', team: winner, scoreRed, scoreBlue, time: gameTime });
+    gameState = "ended";
+    broadcast({
+      type: "winner",
+      team: winner,
+      scoreRed,
+      scoreBlue,
+      time: gameTime,
+    });
     return true;
   }
   goalScoredState = null;
@@ -260,8 +333,8 @@ function applyMovement(activePlayers) {
     player.x += player.vx;
     player.y += player.vy;
   }
-  ball.vx *= BALL_DAMPING;
-  ball.vy *= BALL_DAMPING;
+  ball.vx *= gameSettings.ballDamping;
+  ball.vy *= gameSettings.ballDamping;
   ball.x += ball.vx;
   ball.y += ball.vy;
 }
@@ -281,15 +354,15 @@ function checkGoalScored() {
   if (goalScoredState) return;
   const goal = isGoal();
   if (!goal) return;
-  if (goal === 'red') scoreRed++;
+  if (goal === "red") scoreRed++;
   else scoreBlue++;
   goalScoredState = goal;
   goalScoredTimer = GOAL_CELEBRATION_FRAMES;
-  broadcast({ type: 'goal', team: goal, scoreRed, scoreBlue });
+  broadcast({ type: "goal", team: goal, scoreRed, scoreBlue });
 }
 
 function gameUpdate() {
-  if (gameState !== 'playing') return;
+  if (gameState !== "playing") return;
   if (goalScoredState && handleGoalCelebration()) return;
 
   gameTime += 1 / 60;
@@ -303,7 +376,7 @@ function gameUpdate() {
 }
 
 function broadcastState() {
-  if (gameState !== 'playing') return;
+  if (gameState !== "playing") return;
 
   const playersState = [];
   for (const [, c] of clients) {
@@ -316,12 +389,13 @@ function broadcastState() {
         y: Math.round(c.player.y * 10) / 10,
         r: c.player.r,
         kicking: c.player.kicking || false,
+        ping: c.pingMs ?? null,
       });
     }
   }
 
   broadcast({
-    type: 'state',
+    type: "state",
     players: playersState,
     ball: {
       x: Math.round(ball.x * 10) / 10,
@@ -351,11 +425,17 @@ function sendLobbyUpdate() {
   for (const [, c] of clients) {
     playersList.push({ id: c.id, name: c.name, team: c.team });
   }
-  broadcast({ type: 'lobby', players: playersList, hostId, gameState });
+  broadcast({
+    type: "lobby",
+    players: playersList,
+    hostId,
+    gameState,
+    settings: gameSettings,
+  });
 }
 
 function startGameLoop() {
-  gameState = 'playing';
+  gameState = "playing";
   scoreRed = 0;
   scoreBlue = 0;
   gameTime = 0;
@@ -367,15 +447,20 @@ function startGameLoop() {
   for (const [, c] of clients) {
     if (c.team) {
       c.player = {
-        x: 0, y: 0, vx: 0, vy: 0,
-        r: PLAYER_R, kicking: false, isBall: false,
+        x: 0,
+        y: 0,
+        vx: 0,
+        vy: 0,
+        r: PLAYER_R,
+        kicking: false,
+        isBall: false,
       };
       c.kickCooldown = 0;
     }
   }
 
   resetPositions();
-  broadcast({ type: 'gameStart' });
+  broadcast({ type: "gameStart" });
 
   if (gameLoopInterval) clearInterval(gameLoopInterval);
   if (broadcastInterval) clearInterval(broadcastInterval);
@@ -395,38 +480,40 @@ function stopGameLoop() {
 }
 
 function isLobbyOrEnded() {
-  return gameState === 'lobby' || gameState === 'ended';
+  return gameState === "lobby" || gameState === "ended";
 }
 
 function handleJoin(client, msg) {
-  client.name = (msg.name || 'Oyuncu').slice(0, 16);
+  client.name = (msg.name || "Oyuncu").slice(0, 16);
   sendLobbyUpdate();
 }
 
 function handleTeam(client, msg) {
   if (!isLobbyOrEnded()) return;
-  const teamCount = [...clients.values()].filter(c => c.team === msg.team).length;
+  const teamCount = [...clients.values()].filter(
+    (c) => c.team === msg.team,
+  ).length;
   if (teamCount < 4) client.team = msg.team;
   sendLobbyUpdate();
 }
 
 function handleStart(client) {
   if (client.id !== hostId || !isLobbyOrEnded()) return;
-  const hasRed = [...clients.values()].some(c => c.team === 'red');
-  const hasBlue = [...clients.values()].some(c => c.team === 'blue');
+  const hasRed = [...clients.values()].some((c) => c.team === "red");
+  const hasBlue = [...clients.values()].some((c) => c.team === "blue");
   if (hasRed && hasBlue) startGameLoop();
 }
 
 function handleRestart(client) {
   if (client.id !== hostId) return;
   stopGameLoop();
-  gameState = 'lobby';
+  gameState = "lobby";
   for (const [, c] of clients) c.player = null;
   sendLobbyUpdate();
 }
 
 function handleInput(client, msg) {
-  if (gameState !== 'playing' || !msg.keys) return;
+  if (gameState !== "playing" || !msg.keys) return;
   client.keys = {
     up: !!msg.keys.up,
     down: !!msg.keys.down,
@@ -436,12 +523,28 @@ function handleInput(client, msg) {
   };
 }
 
+function handleSettings(client, msg) {
+  if (client.id !== hostId) return;
+  gameSettings = sanitizeSettings(msg.settings);
+  broadcast({ type: "settings", settings: gameSettings, hostId });
+  sendLobbyUpdate();
+}
+
+function handleResetSettings(client) {
+  if (client.id !== hostId) return;
+  gameSettings = { ...DEFAULT_GAME_SETTINGS };
+  broadcast({ type: "settings", settings: gameSettings, hostId });
+  sendLobbyUpdate();
+}
+
 const messageHandlers = {
   join: handleJoin,
   team: handleTeam,
   start: handleStart,
   restart: handleRestart,
   input: handleInput,
+  settings: handleSettings,
+  resetSettings: handleResetSettings,
 };
 
 function handleClientMessage(client, msg) {
@@ -449,32 +552,56 @@ function handleClientMessage(client, msg) {
   if (handler) handler(client, msg);
 }
 
-wss.on('connection', (ws) => {
+function startPingLoop() {
+  if (pingInterval) return;
+  pingInterval = setInterval(() => {
+    const ts = Date.now().toString();
+    for (const [ws] of clients) {
+      if (ws.readyState === 1) ws.ping(ts);
+    }
+  }, 1000);
+}
+
+wss.on("connection", (ws) => {
   const id = nextId++;
   const clientData = {
     id,
-    name: 'Oyuncu ' + id,
+    name: "Oyuncu " + id,
     team: null,
     keys: { up: false, down: false, left: false, right: false, kick: false },
     player: null,
     kickCooldown: 0,
+    pingMs: null,
   };
   clients.set(ws, clientData);
+  startPingLoop();
 
   if (!hostId) hostId = id;
 
-  ws.send(JSON.stringify({ type: 'welcome', id, hostId }));
+  ws.send(JSON.stringify({ type: "welcome", id, hostId, settings: gameSettings }));
   sendLobbyUpdate();
 
-  ws.on('message', (raw) => {
+  ws.on("message", (raw) => {
     let msg;
-    try { msg = JSON.parse(raw); } catch { return; }
+    try {
+      msg = JSON.parse(raw);
+    } catch {
+      return;
+    }
     const client = clients.get(ws);
     if (!client) return;
     handleClientMessage(client, msg);
   });
 
-  ws.on('close', () => {
+  ws.on("pong", (raw) => {
+    const client = clients.get(ws);
+    if (!client) return;
+    const sentTs = Number(raw.toString());
+    if (!Number.isFinite(sentTs)) return;
+    client.pingMs = Math.max(0, Math.round(Date.now() - sentTs));
+  });
+
+  ws.on("close", () => {
     const client = clients.get(ws);
     clients.delete(ws);
 
@@ -485,9 +612,13 @@ wss.on('connection', (ws) => {
 
     if (clients.size === 0) {
       stopGameLoop();
-      gameState = 'lobby';
+      gameState = "lobby";
       scoreRed = 0;
       scoreBlue = 0;
+      if (pingInterval) {
+        clearInterval(pingInterval);
+        pingInterval = null;
+      }
     }
 
     sendLobbyUpdate();
@@ -496,27 +627,27 @@ wss.on('connection', (ws) => {
 
 // ============ START SERVER ============
 
-server.listen(PORT, '0.0.0.0', () => {
+server.listen(PORT, "0.0.0.0", () => {
   const nets = os.networkInterfaces();
-  let lanIP = 'localhost';
+  let lanIP = "localhost";
   for (const name of Object.keys(nets)) {
     for (const net of nets[name]) {
-      if (net.family === 'IPv4' && !net.internal) {
+      if (net.family === "IPv4" && !net.internal) {
         lanIP = net.address;
         break;
       }
     }
   }
 
-  console.log('');
-  console.log('========================================');
-  console.log('  HaxBall LAN Sunucu Baslatildi!');
-  console.log('========================================');
+  console.log("");
+  console.log("========================================");
+  console.log("  HaxBall LAN Sunucu Baslatildi!");
+  console.log("========================================");
   console.log(`  Yerel:  http://localhost:${PORT}`);
   console.log(`  LAN:    http://${lanIP}:${PORT}`);
-  console.log('');
-  console.log('  Arkadaslarin ayni WiFi/LAN\'daysa');
-  console.log('  LAN adresini paylasarak katilabilir.');
-  console.log('========================================');
-  console.log('');
+  console.log("");
+  console.log("  Arkadaslarin ayni WiFi/LAN'daysa");
+  console.log("  LAN adresini paylasarak katilabilir.");
+  console.log("========================================");
+  console.log("");
 });

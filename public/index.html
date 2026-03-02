@@ -116,6 +116,69 @@
   #start-btn.show { display: block; }
   #start-btn:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
 
+  #admin-settings {
+    width: 500px;
+    max-width: 100%;
+    border: 1px solid rgba(255,255,255,0.16);
+    border-radius: 12px;
+    padding: 12px 14px;
+    background: rgba(255,255,255,0.03);
+    display: none;
+  }
+  #admin-settings.show { display: block; }
+  #admin-settings h3 {
+    font-size: 13px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: #c7d2ff;
+    margin-bottom: 6px;
+  }
+  #settings-role-note {
+    color: #8d95b0;
+    font-size: 11px;
+    margin-bottom: 10px;
+  }
+  .setting-row {
+    display: grid;
+    grid-template-columns: 140px 1fr 78px;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+  }
+  .setting-row:last-child { margin-bottom: 0; }
+  .setting-row label {
+    color: #c8cce0;
+    font-size: 12px;
+  }
+  .setting-row input[type="range"] {
+    width: 100%;
+    accent-color: #6a7cff;
+  }
+  .setting-row .setting-val {
+    text-align: right;
+    color: #e8ebff;
+    font-family: monospace;
+    font-size: 12px;
+  }
+  #reset-settings-btn {
+    margin-top: 8px;
+    border: 1px solid rgba(255,255,255,0.2);
+    background: rgba(255,255,255,0.06);
+    color: #dfe5ff;
+    border-radius: 8px;
+    padding: 7px 10px;
+    font-size: 12px;
+    font-weight: 700;
+    cursor: pointer;
+    transition: opacity 0.15s, transform 0.15s;
+  }
+  #reset-settings-btn:hover { transform: translateY(-1px); }
+  #reset-settings-btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+    transform: none;
+  }
+
   .lobby-info {
     color: #555; font-size: 12px; text-align: center;
     line-height: 1.6;
@@ -207,6 +270,50 @@
     cursor: pointer; transition: transform 0.15s;
   }
   #winner-overlay button:hover { transform: scale(1.05); }
+
+  #net-stats {
+    position: fixed;
+    left: 14px;
+    bottom: 14px;
+    z-index: 120;
+    display: none;
+    min-width: 210px;
+    max-width: 340px;
+    padding: 8px 10px;
+    border-radius: 10px;
+    background: rgba(6, 9, 18, 0.78);
+    border: 1px solid rgba(255,255,255,0.12);
+    backdrop-filter: blur(5px);
+    font-size: 12px;
+    color: #cfd7ff;
+    line-height: 1.5;
+    pointer-events: none;
+  }
+  #net-stats .title {
+    color: #8ea1ff;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    margin-bottom: 3px;
+    font-weight: 700;
+  }
+  #net-stats .row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+  }
+  #net-stats .name {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  #net-stats .name.red { color: #ff9f94; }
+  #net-stats .name.blue { color: #90d0ff; }
+  #net-stats .value.good { color: #73e68f; }
+  #net-stats .value.ok { color: #f5d76e; }
+  #net-stats .value.bad { color: #ff9f63; }
+  #net-stats .value.critical { color: #ff6b6b; }
 </style>
 </head>
 <body>
@@ -240,6 +347,48 @@
     <p class="spectators" id="spectators-text"></p>
 
     <button id="start-btn">Maçı Başlat</button>
+
+    <div id="admin-settings">
+      <h3>Oyun Ayarları</h3>
+      <p id="settings-role-note"></p>
+
+      <div class="setting-row">
+        <label>Oyuncu Hızı</label>
+        <input type="range" min="0.0174" max="0.116" step="0.001" data-setting="playerAccel">
+        <span class="setting-val" data-setting-value="playerAccel"></span>
+      </div>
+      <div class="setting-row">
+        <label>Sürüş Akıcılığı</label>
+        <input type="range" min="0.85" max="0.995" step="0.001" data-setting="playerDamping">
+        <span class="setting-val" data-setting-value="playerDamping"></span>
+      </div>
+      <div class="setting-row">
+        <label>Şut Sırasında Hız</label>
+        <input type="range" min="0.0116" max="0.1044" step="0.001" data-setting="playerKickAccel">
+        <span class="setting-val" data-setting-value="playerKickAccel"></span>
+      </div>
+      <div class="setting-row">
+        <label>Şut Sırasında Damping</label>
+        <input type="range" min="0.85" max="0.995" step="0.001" data-setting="playerKickDamping">
+        <span class="setting-val" data-setting-value="playerKickDamping"></span>
+      </div>
+      <div class="setting-row">
+        <label>Topa Vurma Gücü</label>
+        <input type="range" min="1.16" max="6.96" step="0.01" data-setting="kickStrength">
+        <span class="setting-val" data-setting-value="kickStrength"></span>
+      </div>
+      <div class="setting-row">
+        <label>Vuruş Menzili Bonus</label>
+        <input type="range" min="0" max="24" step="0.5" data-setting="kickRangeBonus">
+        <span class="setting-val" data-setting-value="kickRangeBonus"></span>
+      </div>
+      <div class="setting-row">
+        <label>Top Sürtünmesi</label>
+        <input type="range" min="0.93" max="0.999" step="0.001" data-setting="ballDamping">
+        <span class="setting-val" data-setting-value="ballDamping"></span>
+      </div>
+      <button id="reset-settings-btn" type="button">Varsayılanlara Dön</button>
+    </div>
 
     <p class="lobby-info">
       Oda sahibi maçı başlatır. Her takımda en az 1, en fazla 4 kişi.<br>
@@ -283,6 +432,7 @@
   <p class="win-sub" id="winner-sub"></p>
   <button id="restartBtn" style="display:none">Lobiye Dön</button>
 </div>
+<div id="net-stats"></div>
 
 <script>
 // ============ CONNECTION ============
@@ -293,6 +443,23 @@ let currentHostId = null;
 let myName = '';
 let myTeam = null;
 let currentGameState = 'lobby';
+const netStatsEl = document.getElementById('net-stats');
+const adminSettingsEl = document.getElementById('admin-settings');
+const settingsRoleNoteEl = document.getElementById('settings-role-note');
+const resetSettingsBtn = document.getElementById('reset-settings-btn');
+const settingsInputs = Array.from(document.querySelectorAll('#admin-settings [data-setting]'));
+const settingsValueEls = Array.from(document.querySelectorAll('[data-setting-value]'));
+const DEFAULT_GAME_SETTINGS = {
+  playerAccel: 0.058,
+  playerDamping: 0.96,
+  playerKickAccel: 0.0406,
+  playerKickDamping: 0.96,
+  kickStrength: 3.48,
+  kickRangeBonus: 4,
+  ballDamping: 0.99,
+};
+let gameSettings = { ...DEFAULT_GAME_SETTINGS };
+let sendSettingsTimer = null;
 
 ws.onopen = () => console.log('Sunucuya bağlandı');
 ws.onclose = () => {
@@ -305,6 +472,7 @@ ws.onmessage = (e) => {
   switch (msg.type) {
     case 'welcome': onWelcome(msg); break;
     case 'lobby': onLobbyUpdate(msg); break;
+    case 'settings': onSettingsUpdate(msg); break;
     case 'gameStart': onGameStart(); break;
     case 'state': onGameState(msg); break;
     case 'goal': onGoal(msg); break;
@@ -321,6 +489,8 @@ function send(msg) {
 function onWelcome(msg) {
   myId = msg.id;
   currentHostId = msg.hostId;
+  if (msg.settings) applySettings(msg.settings);
+  refreshSettingsUI();
 }
 
 document.getElementById('name-btn').addEventListener('click', joinLobby);
@@ -351,10 +521,17 @@ document.getElementById('start-btn').addEventListener('click', () => {
 document.getElementById('restartBtn').addEventListener('click', () => {
   send({ type: 'restart' });
 });
+resetSettingsBtn.addEventListener('click', () => {
+  if (!isMeHost()) return;
+  send({ type: 'resetSettings' });
+});
+setupSettingsControls();
 
 function onLobbyUpdate(msg) {
   currentHostId = msg.hostId;
   currentGameState = msg.gameState;
+  if (msg.settings) applySettings(msg.settings);
+  refreshSettingsUI();
 
   if (msg.gameState === 'lobby' || msg.gameState === 'ended') {
     document.getElementById('lobby').classList.remove('hidden');
@@ -364,6 +541,7 @@ function onLobbyUpdate(msg) {
       document.getElementById('name-form').style.display = 'none';
       document.getElementById('lobby-content').classList.add('show');
     }
+    if (msg.gameState === 'lobby') netStatsEl.style.display = 'none';
   }
 
   const redList = document.getElementById('red-list');
@@ -503,6 +681,7 @@ function onGameState(msg) {
   prevState = currState;
   currState = { players: msg.players, ball: msg.ball, time: performance.now() };
   stateTimestamp = performance.now();
+  renderNetStats(msg.players);
 
   if (msg.scoreRed !== lastScoreRed) {
     document.getElementById('score-red').textContent = msg.scoreRed;
@@ -518,6 +697,94 @@ function onGameState(msg) {
     document.getElementById('timer').textContent = timerStr;
     lastTimerText = timerStr;
   }
+}
+
+function onSettingsUpdate(msg) {
+  if (msg.hostId != null) currentHostId = msg.hostId;
+  if (msg.settings) applySettings(msg.settings);
+  refreshSettingsUI();
+}
+
+function applySettings(nextSettings) {
+  gameSettings = { ...gameSettings, ...nextSettings };
+}
+
+function isMeHost() {
+  return myId != null && myId === currentHostId;
+}
+
+function formatSettingValue(key, value) {
+  if (key === 'kickRangeBonus') return value.toFixed(1);
+  if (key === 'kickStrength') return value.toFixed(2);
+  return value.toFixed(3);
+}
+
+function refreshSettingsUI() {
+  adminSettingsEl.classList.add('show');
+  const host = isMeHost();
+  settingsRoleNoteEl.textContent = host
+    ? 'Bu ayarlar tüm oyunculara uygulanır.'
+    : 'Sadece oda sahibi bu ayarları değiştirebilir.';
+
+  for (const input of settingsInputs) {
+    const key = input.dataset.setting;
+    if (!(key in gameSettings)) continue;
+    input.disabled = !host;
+    input.value = String(gameSettings[key]);
+  }
+  resetSettingsBtn.disabled = !host;
+
+  for (const valueEl of settingsValueEls) {
+    const key = valueEl.dataset.settingValue;
+    if (!(key in gameSettings)) continue;
+    valueEl.textContent = formatSettingValue(key, Number(gameSettings[key]));
+  }
+}
+
+function setupSettingsControls() {
+  for (const input of settingsInputs) {
+    input.addEventListener('input', () => {
+      const key = input.dataset.setting;
+      const value = Number(input.value);
+      if (!Number.isFinite(value) || !(key in gameSettings)) return;
+      gameSettings[key] = value;
+      refreshSettingsUI();
+      if (!isMeHost()) return;
+      if (sendSettingsTimer) clearTimeout(sendSettingsTimer);
+      sendSettingsTimer = setTimeout(() => {
+        send({ type: 'settings', settings: gameSettings });
+      }, 70);
+    });
+  }
+}
+
+function getLagInfo(ping) {
+  if (!Number.isFinite(ping)) return { text: '--', cls: 'ok' };
+  if (ping < 60) return { text: `${ping} ms (iyi)`, cls: 'good' };
+  if (ping < 110) return { text: `${ping} ms (orta)`, cls: 'ok' };
+  if (ping < 180) return { text: `${ping} ms (lag)`, cls: 'bad' };
+  return { text: `${ping} ms (yüksek lag)`, cls: 'critical' };
+}
+
+function renderNetStats(players) {
+  if (!players || players.length === 0) {
+    netStatsEl.style.display = 'none';
+    return;
+  }
+  netStatsEl.style.display = 'block';
+  const sorted = [...players].sort((a, b) => a.name.localeCompare(b.name, 'tr'));
+  const lines = ['<div class="title">Ağ Durumu</div>'];
+  for (const p of sorted) {
+    const lag = getLagInfo(p.ping);
+    const meMark = p.id === myId ? ' (sen)' : '';
+    lines.push(
+      `<div class="row">` +
+      `<span class="name ${p.team}">${p.name}${meMark}</span>` +
+      `<span class="value ${lag.cls}">${lag.text}</span>` +
+      `</div>`
+    );
+  }
+  netStatsEl.innerHTML = lines.join('');
 }
 
 function lerpState(now) {
