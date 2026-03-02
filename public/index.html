@@ -1,0 +1,759 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>HaxBall - Atatürk Olimpiyat Stadı</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: #0f0f1a;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    overflow: hidden;
+    user-select: none;
+    color: #fff;
+  }
+
+  /* ========== LOBBY ========== */
+
+  #lobby {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 20px;
+    transition: opacity 0.3s;
+  }
+  #lobby.hidden { display: none; }
+
+  #lobby h1 { font-size: 52px; font-weight: 900; }
+  #lobby h1 span.red { color: #e74c3c; }
+  #lobby h1 span.blue { color: #3498db; }
+  #lobby .map-title { color: #c9a44c; font-size: 15px; font-weight: 600; }
+
+  #name-form {
+    display: flex; gap: 10px; align-items: center;
+  }
+  #name-form input {
+    background: rgba(255,255,255,0.08);
+    border: 2px solid rgba(255,255,255,0.15);
+    color: #fff; padding: 10px 18px;
+    border-radius: 10px; font-size: 16px;
+    outline: none; width: 220px;
+    transition: border-color 0.2s;
+  }
+  #name-form input:focus { border-color: rgba(255,255,255,0.4); }
+  #name-form button {
+    background: linear-gradient(135deg, #e74c3c, #3498db);
+    color: #fff; border: none; padding: 10px 28px;
+    font-size: 15px; font-weight: 700; border-radius: 10px;
+    cursor: pointer; transition: transform 0.15s;
+  }
+  #name-form button:hover { transform: scale(1.05); }
+
+  #lobby-content { display: none; width: 500px; }
+  #lobby-content.show { display: flex; flex-direction: column; align-items: center; gap: 16px; }
+
+  .my-name-display { color: #aaa; font-size: 13px; }
+  .my-name-display b { color: #fff; }
+
+  #teams-container {
+    display: flex; gap: 20px; width: 100%;
+  }
+
+  .team-box {
+    flex: 1; border-radius: 12px; padding: 16px;
+    background: rgba(255,255,255,0.04);
+    min-height: 180px;
+  }
+  .team-box.red-box { border: 2px solid #e74c3c44; }
+  .team-box.blue-box { border: 2px solid #3498db44; }
+
+  .team-box h3 {
+    font-size: 14px; text-transform: uppercase; letter-spacing: 1px;
+    margin-bottom: 12px; display: flex; align-items: center; gap: 8px;
+  }
+  .team-box.red-box h3 { color: #e74c3c; }
+  .team-box.blue-box h3 { color: #3498db; }
+
+  .team-player-list { list-style: none; }
+  .team-player-list li {
+    padding: 6px 10px; margin-bottom: 4px;
+    border-radius: 6px; font-size: 14px;
+    background: rgba(255,255,255,0.04);
+  }
+  .team-player-list li.me { font-weight: 700; }
+
+  .team-join-btn {
+    margin-top: 10px; width: 100%;
+    padding: 8px; border-radius: 8px;
+    font-size: 13px; font-weight: 600;
+    cursor: pointer; border: none; color: #fff;
+    transition: transform 0.15s, opacity 0.2s;
+  }
+  .team-join-btn:hover { transform: scale(1.03); }
+  .team-join-btn.red-btn { background: #e74c3c; }
+  .team-join-btn.blue-btn { background: #3498db; }
+  .team-join-btn:disabled { opacity: 0.3; cursor: not-allowed; transform: none; }
+
+  .spectators {
+    color: #666; font-size: 12px; text-align: center;
+  }
+
+  #start-btn {
+    background: linear-gradient(135deg, #27ae60, #2ecc71);
+    color: #fff; border: none; padding: 14px 48px;
+    font-size: 18px; font-weight: 700; border-radius: 12px;
+    cursor: pointer; transition: transform 0.15s;
+    display: none;
+  }
+  #start-btn:hover { transform: scale(1.05); }
+  #start-btn.show { display: block; }
+  #start-btn:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
+
+  .lobby-info {
+    color: #555; font-size: 12px; text-align: center;
+    line-height: 1.6;
+  }
+
+  /* ========== GAME ========== */
+
+  #game-container { display: none; flex-direction: column; align-items: center; }
+  #game-container.show { display: flex; }
+
+  #header {
+    display: flex; align-items: center; justify-content: center;
+    gap: 30px; margin-bottom: 10px;
+  }
+
+  .score-panel {
+    display: flex; align-items: center; gap: 12px;
+    padding: 6px 20px; border-radius: 10px;
+    background: rgba(255,255,255,0.08);
+  }
+  .score-panel.red { border: 2px solid #e74c3c; }
+  .score-panel.blue { border: 2px solid #3498db; }
+
+  .team-dot { width: 14px; height: 14px; border-radius: 50%; display: inline-block; }
+  .team-dot.red { background: #e74c3c; box-shadow: 0 0 8px #e74c3c88; }
+  .team-dot.blue { background: #3498db; box-shadow: 0 0 8px #3498db88; }
+
+  .score-val { font-size: 28px; font-weight: 800; min-width: 24px; text-align: center; }
+  .team-label { font-size: 12px; color: #aaa; text-transform: uppercase; letter-spacing: 1px; }
+
+  #timer {
+    font-size: 18px; font-weight: 700;
+    background: rgba(255,255,255,0.08);
+    padding: 6px 16px; border-radius: 8px;
+    min-width: 70px; text-align: center; letter-spacing: 1px;
+  }
+
+  #map-name {
+    color: #666; font-size: 11px; text-align: center; margin-bottom: 6px;
+    letter-spacing: 2px; text-transform: uppercase;
+  }
+
+  #gameCanvas {
+    border-radius: 10px;
+    box-shadow: 0 8px 40px rgba(0,0,0,0.6);
+  }
+
+  #controls-info {
+    margin-top: 10px;
+    display: flex; gap: 36px; color: #666; font-size: 12px;
+  }
+  .ctrl-group { display: flex; align-items: center; gap: 6px; }
+
+  kbd {
+    background: rgba(255,255,255,0.08); padding: 1px 6px; border-radius: 3px;
+    color: #999; font-family: monospace; font-size: 11px; border: 1px solid rgba(255,255,255,0.12);
+  }
+
+  #goal-flash {
+    position: fixed; inset: 0; pointer-events: none; z-index: 50; opacity: 0; transition: opacity 0.15s;
+  }
+  #goal-flash.red { background: radial-gradient(ellipse at center, rgba(231,76,60,0.3) 0%, transparent 70%); }
+  #goal-flash.blue { background: radial-gradient(ellipse at center, rgba(52,152,219,0.3) 0%, transparent 70%); }
+
+  #goal-text {
+    position: fixed; top: 50%; left: 50%;
+    transform: translate(-50%, -50%) scale(0);
+    font-size: 80px; font-weight: 900; color: #fff; z-index: 55;
+    pointer-events: none;
+    text-shadow: 0 4px 30px rgba(0,0,0,0.6), 0 0 60px currentColor;
+    transition: transform 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275), opacity 0.3s;
+    opacity: 0; letter-spacing: 8px;
+  }
+  #goal-text.show { transform: translate(-50%, -50%) scale(1); opacity: 1; }
+
+  #winner-overlay {
+    position: fixed; inset: 0;
+    background: rgba(10,10,25,0.95);
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    z-index: 200; opacity: 0; pointer-events: none; transition: opacity 0.4s;
+  }
+  #winner-overlay.show { opacity: 1; pointer-events: all; }
+  #winner-overlay h1 { font-size: 50px; font-weight: 900; margin-bottom: 10px; }
+  #winner-overlay .win-sub { font-size: 18px; color: #aaa; margin-bottom: 30px; }
+  #winner-overlay button {
+    background: linear-gradient(135deg, #e74c3c, #3498db);
+    color: #fff; border: none; padding: 14px 48px;
+    font-size: 18px; font-weight: 700; border-radius: 12px;
+    cursor: pointer; transition: transform 0.15s;
+  }
+  #winner-overlay button:hover { transform: scale(1.05); }
+</style>
+</head>
+<body>
+
+<!-- LOBBY SCREEN -->
+<div id="lobby">
+  <h1><span class="red">Hax</span><span class="blue">Ball</span></h1>
+  <p class="map-title">Atatürk Olimpiyat Stadı</p>
+
+  <div id="name-form">
+    <input type="text" id="name-input" placeholder="Kullanıcı adını gir..." maxlength="16" autocomplete="off">
+    <button id="name-btn">Katıl</button>
+  </div>
+
+  <div id="lobby-content">
+    <p class="my-name-display">Hoşgeldin, <b id="my-name-label"></b></p>
+
+    <div id="teams-container">
+      <div class="team-box red-box">
+        <h3><span class="team-dot red" style="width:10px;height:10px"></span> Kırmızı Takım</h3>
+        <ul class="team-player-list" id="red-list"></ul>
+        <button class="team-join-btn red-btn" id="join-red">Kırmızıya Katıl</button>
+      </div>
+      <div class="team-box blue-box">
+        <h3><span class="team-dot blue" style="width:10px;height:10px"></span> Mavi Takım</h3>
+        <ul class="team-player-list" id="blue-list"></ul>
+        <button class="team-join-btn blue-btn" id="join-blue">Maviye Katıl</button>
+      </div>
+    </div>
+
+    <p class="spectators" id="spectators-text"></p>
+
+    <button id="start-btn">Maçı Başlat</button>
+
+    <p class="lobby-info">
+      Oda sahibi maçı başlatır. Her takımda en az 1, en fazla 4 kişi.<br>
+      Hareket: <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> veya <kbd>↑</kbd><kbd>←</kbd><kbd>↓</kbd><kbd>→</kbd> &nbsp; Şut: <kbd>Space</kbd> veya <kbd>L</kbd>
+    </p>
+  </div>
+</div>
+
+<!-- GAME SCREEN -->
+<div id="game-container">
+  <div id="map-name">Atatürk Olimpiyat Stadı</div>
+  <div id="header">
+    <div class="score-panel red">
+      <div class="team-dot red"></div>
+      <span class="team-label">Kırmızı</span>
+      <span class="score-val" id="score-red">0</span>
+    </div>
+    <div id="timer">0:00</div>
+    <div class="score-panel blue">
+      <span class="score-val" id="score-blue">0</span>
+      <span class="team-label">Mavi</span>
+      <div class="team-dot blue"></div>
+    </div>
+  </div>
+  <canvas id="gameCanvas"></canvas>
+  <div id="controls-info">
+    <div class="ctrl-group">
+      <span>Hareket: <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> veya <kbd>↑</kbd><kbd>←</kbd><kbd>↓</kbd><kbd>→</kbd></span>
+    </div>
+    <div class="ctrl-group">
+      <span>Şut: <kbd>Space</kbd> veya <kbd>L</kbd></span>
+    </div>
+  </div>
+</div>
+
+<div id="goal-flash"></div>
+<div id="goal-text">GOL!</div>
+
+<div id="winner-overlay">
+  <h1 id="winner-title"></h1>
+  <p class="win-sub" id="winner-sub"></p>
+  <button id="restartBtn" style="display:none">Lobiye Dön</button>
+</div>
+
+<script>
+// ============ CONNECTION ============
+
+const ws = new WebSocket(`ws://${location.host}`);
+let myId = null;
+let currentHostId = null;
+let myName = '';
+let myTeam = null;
+let currentGameState = 'lobby';
+
+ws.onopen = () => console.log('Sunucuya bağlandı');
+ws.onclose = () => {
+  alert('Sunucu bağlantısı kesildi!');
+  location.reload();
+};
+
+ws.onmessage = (e) => {
+  const msg = JSON.parse(e.data);
+  switch (msg.type) {
+    case 'welcome': onWelcome(msg); break;
+    case 'lobby': onLobbyUpdate(msg); break;
+    case 'gameStart': onGameStart(); break;
+    case 'state': onGameState(msg); break;
+    case 'goal': onGoal(msg); break;
+    case 'winner': onWinner(msg); break;
+  }
+};
+
+function send(msg) {
+  if (ws.readyState === 1) ws.send(JSON.stringify(msg));
+}
+
+// ============ LOBBY LOGIC ============
+
+function onWelcome(msg) {
+  myId = msg.id;
+  currentHostId = msg.hostId;
+}
+
+document.getElementById('name-btn').addEventListener('click', joinLobby);
+document.getElementById('name-input').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') joinLobby();
+});
+
+function joinLobby() {
+  const input = document.getElementById('name-input');
+  const name = input.value.trim();
+  if (!name) return;
+  myName = name;
+  send({ type: 'join', name });
+  document.getElementById('name-form').style.display = 'none';
+  document.getElementById('lobby-content').classList.add('show');
+  document.getElementById('my-name-label').textContent = myName;
+}
+
+document.getElementById('join-red').addEventListener('click', () => {
+  send({ type: 'team', team: 'red' });
+});
+document.getElementById('join-blue').addEventListener('click', () => {
+  send({ type: 'team', team: 'blue' });
+});
+document.getElementById('start-btn').addEventListener('click', () => {
+  send({ type: 'start' });
+});
+document.getElementById('restartBtn').addEventListener('click', () => {
+  send({ type: 'restart' });
+});
+
+function onLobbyUpdate(msg) {
+  currentHostId = msg.hostId;
+  currentGameState = msg.gameState;
+
+  if (msg.gameState === 'lobby' || msg.gameState === 'ended') {
+    document.getElementById('lobby').classList.remove('hidden');
+    document.getElementById('game-container').classList.remove('show');
+    document.getElementById('winner-overlay').classList.remove('show');
+    if (myName) {
+      document.getElementById('name-form').style.display = 'none';
+      document.getElementById('lobby-content').classList.add('show');
+    }
+  }
+
+  const redList = document.getElementById('red-list');
+  const blueList = document.getElementById('blue-list');
+  redList.innerHTML = '';
+  blueList.innerHTML = '';
+
+  let spectators = [];
+  myTeam = null;
+
+  for (const p of msg.players) {
+    if (p.id === myId) myTeam = p.team;
+
+    if (p.team === 'red') {
+      const li = document.createElement('li');
+      li.textContent = p.name + (p.id === currentHostId ? ' ★' : '');
+      if (p.id === myId) li.classList.add('me');
+      redList.appendChild(li);
+    } else if (p.team === 'blue') {
+      const li = document.createElement('li');
+      li.textContent = p.name + (p.id === currentHostId ? ' ★' : '');
+      if (p.id === myId) li.classList.add('me');
+      blueList.appendChild(li);
+    } else {
+      spectators.push(p.name);
+    }
+  }
+
+  const specText = document.getElementById('spectators-text');
+  specText.textContent = spectators.length > 0 ? 'İzleyiciler: ' + spectators.join(', ') : '';
+
+  const redCount = msg.players.filter(p => p.team === 'red').length;
+  const blueCount = msg.players.filter(p => p.team === 'blue').length;
+  document.getElementById('join-red').disabled = redCount >= 4;
+  document.getElementById('join-blue').disabled = blueCount >= 4;
+
+  const startBtn = document.getElementById('start-btn');
+  if (myId === currentHostId) {
+    startBtn.classList.add('show');
+    startBtn.disabled = !(redCount > 0 && blueCount > 0);
+  } else {
+    startBtn.classList.remove('show');
+  }
+}
+
+// ============ GAME CANVAS ============
+
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+const W = 1100, H = 640;
+canvas.width = W; canvas.height = H;
+const CX = W / 2, CY = H / 2;
+
+const SCALE = 0.58;
+const FIELD_HW = 594.56 * SCALE;
+const FIELD_HH = 297.28 * SCALE;
+const FIELD_X1 = CX - FIELD_HW;
+const FIELD_X2 = CX + FIELD_HW;
+const FIELD_Y1 = CY - FIELD_HH;
+const FIELD_Y2 = CY + FIELD_HH;
+const FIELD_W = FIELD_HW * 2;
+const FIELD_H = FIELD_HH * 2;
+const GOAL_HH = 88.08 * SCALE;
+const GOAL_DEPTH = 55 * SCALE;
+const GOAL_Y1 = CY - GOAL_HH;
+const GOAL_Y2 = CY + GOAL_HH;
+const GOAL_POST_R = 8.8 * SCALE;
+const KICKOFF_R = 88 * SCALE;
+const CORNER_R = 20 * SCALE;
+const PENALTY_HW = 154 * SCALE;
+const PENALTY_HH = 143 * SCALE;
+const CENTER_CIRCLE_R = 77 * SCALE;
+const PLAYER_R = 15 * SCALE * 1.35;
+const BALL_R = 7 * SCALE;
+const KICK_RANGE = PLAYER_R + BALL_R + 4;
+
+const TRACK_COLOR = '#9E3B26';
+const FIELD_STRIPE_1 = '#4a8c3f';
+const FIELD_STRIPE_2 = '#438536';
+
+const goalPosts = [
+  { x: FIELD_X1, y: GOAL_Y1, r: GOAL_POST_R },
+  { x: FIELD_X1, y: GOAL_Y2, r: GOAL_POST_R },
+  { x: FIELD_X2, y: GOAL_Y1, r: GOAL_POST_R },
+  { x: FIELD_X2, y: GOAL_Y2, r: GOAL_POST_R },
+];
+
+// Interpolation state: we keep two snapshots and lerp between them
+let prevState = null;
+let currState = null;
+let stateTimestamp = 0;
+const SERVER_TICK_MS = 50; // 1000/20 = 50ms between server broadcasts
+let gamePlayers = [];
+let gameBall = { x: CX, y: CY, vx: 0, vy: 0, r: BALL_R };
+let rendering = false;
+let lastScoreRed = -1, lastScoreBlue = -1, lastTimerText = '';
+
+// ============ INPUT ============
+
+const keys = {};
+document.addEventListener('keydown', (e) => {
+  if (currentGameState !== 'playing') return;
+  keys[e.code] = true;
+  sendInput();
+  e.preventDefault();
+});
+document.addEventListener('keyup', (e) => {
+  keys[e.code] = false;
+  sendInput();
+});
+
+function sendInput() {
+  send({
+    type: 'input',
+    keys: {
+      up: !!(keys['KeyW'] || keys['ArrowUp']),
+      down: !!(keys['KeyS'] || keys['ArrowDown']),
+      left: !!(keys['KeyA'] || keys['ArrowLeft']),
+      right: !!(keys['KeyD'] || keys['ArrowRight']),
+      kick: !!(keys['Space'] || keys['KeyL']),
+    }
+  });
+}
+
+// ============ GAME EVENTS ============
+
+function onGameStart() {
+  currentGameState = 'playing';
+  document.getElementById('lobby').classList.add('hidden');
+  document.getElementById('game-container').classList.add('show');
+  document.getElementById('winner-overlay').classList.remove('show');
+  document.getElementById('restartBtn').style.display = 'none';
+  if (!rendering) { rendering = true; renderLoop(); }
+}
+
+function onGameState(msg) {
+  prevState = currState;
+  currState = { players: msg.players, ball: msg.ball, time: performance.now() };
+  stateTimestamp = performance.now();
+
+  if (msg.scoreRed !== lastScoreRed) {
+    document.getElementById('score-red').textContent = msg.scoreRed;
+    lastScoreRed = msg.scoreRed;
+  }
+  if (msg.scoreBlue !== lastScoreBlue) {
+    document.getElementById('score-blue').textContent = msg.scoreBlue;
+    lastScoreBlue = msg.scoreBlue;
+  }
+  const m = Math.floor(msg.time / 60), s = Math.floor(msg.time % 60);
+  const timerStr = `${m}:${s.toString().padStart(2, '0')}`;
+  if (timerStr !== lastTimerText) {
+    document.getElementById('timer').textContent = timerStr;
+    lastTimerText = timerStr;
+  }
+}
+
+function lerpState(now) {
+  if (!currState) return;
+  if (!prevState) {
+    gamePlayers = currState.players;
+    gameBall = currState.ball;
+    return;
+  }
+
+  const elapsed = now - stateTimestamp;
+  const t = Math.min(Math.max(elapsed / SERVER_TICK_MS, 0), 1.2);
+
+  gameBall = {
+    x: prevState.ball.x + (currState.ball.x - prevState.ball.x) * t,
+    y: prevState.ball.y + (currState.ball.y - prevState.ball.y) * t,
+    vx: currState.ball.vx,
+    vy: currState.ball.vy,
+    r: currState.ball.r,
+  };
+
+  gamePlayers = currState.players.map((cp) => {
+    const pp = prevState.players.find(p => p.id === cp.id);
+    if (!pp) return cp;
+    return {
+      ...cp,
+      x: pp.x + (cp.x - pp.x) * t,
+      y: pp.y + (cp.y - pp.y) * t,
+    };
+  });
+}
+
+function onGoal(msg) {
+  const flash = document.getElementById('goal-flash');
+  const text = document.getElementById('goal-text');
+  flash.className = msg.team;
+  flash.style.opacity = '1';
+  text.classList.add('show');
+  text.style.color = msg.team === 'red' ? '#e74c3c' : '#3498db';
+  setTimeout(() => { flash.style.opacity = '0'; }, 1500);
+  setTimeout(() => { text.classList.remove('show'); }, 5000);
+}
+
+function onWinner(msg) {
+  currentGameState = 'ended';
+  const ov = document.getElementById('winner-overlay');
+  const t = document.getElementById('winner-title');
+  const s = document.getElementById('winner-sub');
+  t.innerHTML = msg.team === 'red' ? '🔴 Kırmızı Kazandı!' : '🔵 Mavi Kazandı!';
+  t.style.color = msg.team === 'red' ? '#e74c3c' : '#3498db';
+  const m = Math.floor(msg.time / 60), sec = Math.floor(msg.time % 60);
+  s.textContent = `${msg.scoreRed} - ${msg.scoreBlue} · ${m}:${sec.toString().padStart(2, '0')}`;
+  setTimeout(() => ov.classList.add('show'), 800);
+
+  if (myId === currentHostId) {
+    document.getElementById('restartBtn').style.display = 'block';
+  }
+}
+
+// ============ STADIUM DRAWING (pre-rendered) ============
+
+const seats = [];
+function generateSeats() {
+  const outerRx = FIELD_HW + 170, outerRy = FIELD_HH + 170;
+  const innerRx = FIELD_HW + 40, innerRy = FIELD_HH + 40;
+  function addTier(iRx, iRy, oRx, oRy, c1, c2) {
+    const midRx = (oRx + iRx) / 2;
+    const gap = 14;
+    for (let angle = 0; angle < Math.PI * 2; angle += gap / midRx) {
+      for (let row = 0; row < 2; row++) {
+        const rx = iRx + (oRx - iRx) * (row + 0.5) / 2;
+        const ry = iRy + (oRy - iRy) * (row + 0.5) / 2;
+        const sx = CX + Math.cos(angle) * rx;
+        const sy = CY + Math.sin(angle) * ry;
+        if (sx < 8 || sx > W - 8 || sy < 8 || sy > H - 8) continue;
+        seats.push({ x: sx, y: sy, color: Math.random() > 0.3 ? c1 : c2 });
+      }
+    }
+  }
+  addTier(innerRx + 60, innerRy + 60, outerRx + 10, outerRy + 10, '#002D59', '#001a3a');
+  addTier(innerRx + 10, innerRy + 10, innerRx + 55, innerRy + 55, '#A10000', '#6b0000');
+}
+generateSeats();
+
+function drawStadium(c) {
+  c.fillStyle = '#1a1209'; c.fillRect(0, 0, W, H);
+  c.beginPath(); c.ellipse(CX, CY, FIELD_HW + 200, FIELD_HH + 200, 0, 0, Math.PI * 2);
+  c.fillStyle = '#0a0a0a'; c.fill();
+  c.beginPath(); c.ellipse(CX, CY, FIELD_HW + 180, FIELD_HH + 180, 0, 0, Math.PI * 2);
+  c.fillStyle = '#001a3a'; c.fill();
+  c.beginPath(); c.ellipse(CX, CY, FIELD_HW + 65, FIELD_HH + 65, 0, 0, Math.PI * 2);
+  c.fillStyle = '#6b0000'; c.fill();
+  const seatsByColor = {};
+  for (const s of seats) {
+    if (!seatsByColor[s.color]) seatsByColor[s.color] = [];
+    seatsByColor[s.color].push(s);
+  }
+  for (const [color, group] of Object.entries(seatsByColor)) {
+    c.fillStyle = color;
+    for (const s of group) c.fillRect(s.x - 1.5, s.y - 1.5, 3, 3);
+  }
+  c.beginPath(); c.ellipse(CX, CY, FIELD_HW + 35, FIELD_HH + 35, 0, 0, Math.PI * 2);
+  c.fillStyle = TRACK_COLOR; c.fill();
+  for (let i = 0; i < 3; i++) {
+    c.beginPath(); c.ellipse(CX, CY, FIELD_HW + 35 - i * 9, FIELD_HH + 35 - i * 9, 0, 0, Math.PI * 2);
+    c.strokeStyle = `rgba(255,255,255,${0.06 + i * 0.024})`; c.lineWidth = 0.5; c.stroke();
+  }
+}
+
+function drawField(c) {
+  c.save();
+  c.beginPath();
+  const cr = CORNER_R;
+  c.moveTo(FIELD_X1 + cr, FIELD_Y1);
+  c.lineTo(FIELD_X2 - cr, FIELD_Y1);
+  c.arcTo(FIELD_X2, FIELD_Y1, FIELD_X2, FIELD_Y1 + cr, cr);
+  c.lineTo(FIELD_X2, FIELD_Y2 - cr);
+  c.arcTo(FIELD_X2, FIELD_Y2, FIELD_X2 - cr, FIELD_Y2, cr);
+  c.lineTo(FIELD_X1 + cr, FIELD_Y2);
+  c.arcTo(FIELD_X1, FIELD_Y2, FIELD_X1, FIELD_Y2 - cr, cr);
+  c.lineTo(FIELD_X1, FIELD_Y1 + cr);
+  c.arcTo(FIELD_X1, FIELD_Y1, FIELD_X1 + cr, FIELD_Y1, cr);
+  c.closePath(); c.clip();
+  const stripeW = FIELD_W / 12;
+  for (let i = 0; i < 12; i++) {
+    c.fillStyle = i % 2 === 0 ? FIELD_STRIPE_1 : FIELD_STRIPE_2;
+    c.fillRect(FIELD_X1 + i * stripeW, FIELD_Y1, stripeW + 1, FIELD_H);
+  }
+  c.restore();
+
+  c.strokeStyle = 'rgba(255,255,255,0.5)'; c.lineWidth = 2;
+  c.beginPath();
+  c.moveTo(FIELD_X1 + cr, FIELD_Y1); c.lineTo(FIELD_X2 - cr, FIELD_Y1);
+  c.arcTo(FIELD_X2, FIELD_Y1, FIELD_X2, FIELD_Y1 + cr, cr);
+  c.lineTo(FIELD_X2, FIELD_Y2 - cr); c.arcTo(FIELD_X2, FIELD_Y2, FIELD_X2 - cr, FIELD_Y2, cr);
+  c.lineTo(FIELD_X1 + cr, FIELD_Y2); c.arcTo(FIELD_X1, FIELD_Y2, FIELD_X1, FIELD_Y2 - cr, cr);
+  c.lineTo(FIELD_X1, FIELD_Y1 + cr); c.arcTo(FIELD_X1, FIELD_Y1, FIELD_X1 + cr, FIELD_Y1, cr);
+  c.closePath(); c.stroke();
+
+  c.beginPath(); c.moveTo(CX, FIELD_Y1); c.lineTo(CX, FIELD_Y2);
+  c.strokeStyle = 'rgba(255,255,255,0.4)'; c.lineWidth = 1.5; c.stroke();
+  c.beginPath(); c.arc(CX, CY, KICKOFF_R, 0, Math.PI * 2); c.stroke();
+  c.beginPath(); c.arc(CX, CY, 3, 0, Math.PI * 2);
+  c.fillStyle = 'rgba(255,255,255,0.5)'; c.fill();
+
+  const penW = PENALTY_HW, penHH = PENALTY_HH;
+  c.strokeStyle = 'rgba(255,255,255,0.35)'; c.lineWidth = 1.5;
+  c.strokeRect(FIELD_X1, CY - penHH, penW, penHH * 2);
+  c.strokeRect(FIELD_X2 - penW, CY - penHH, penW, penHH * 2);
+  c.beginPath(); c.arc(FIELD_X1 + penW, CY, CENTER_CIRCLE_R, -Math.PI / 2, Math.PI / 2);
+  c.strokeStyle = 'rgba(255,255,255,0.2)'; c.stroke();
+  c.beginPath(); c.arc(FIELD_X2 - penW, CY, CENTER_CIRCLE_R, Math.PI / 2, -Math.PI / 2); c.stroke();
+}
+
+function drawGoals(c) {
+  c.fillStyle = 'rgba(231,76,60,0.12)';
+  c.fillRect(FIELD_X1 - GOAL_DEPTH, GOAL_Y1, GOAL_DEPTH, GOAL_HH * 2);
+  c.strokeStyle = 'rgba(231,76,60,0.3)'; c.lineWidth = 0.5;
+  for (let i = 0; i < 6; i++) { const x = FIELD_X1 - GOAL_DEPTH + i * (GOAL_DEPTH / 5); c.beginPath(); c.moveTo(x, GOAL_Y1); c.lineTo(x, GOAL_Y2); c.stroke(); }
+  for (let i = 0; i < 8; i++) { const y = GOAL_Y1 + i * (GOAL_HH * 2 / 7); c.beginPath(); c.moveTo(FIELD_X1 - GOAL_DEPTH, y); c.lineTo(FIELD_X1, y); c.stroke(); }
+  c.strokeStyle = '#e74c3c'; c.lineWidth = 2.5; c.beginPath();
+  c.moveTo(FIELD_X1, GOAL_Y1); c.lineTo(FIELD_X1 - GOAL_DEPTH, GOAL_Y1);
+  c.lineTo(FIELD_X1 - GOAL_DEPTH, GOAL_Y2); c.lineTo(FIELD_X1, GOAL_Y2); c.stroke();
+
+  c.fillStyle = 'rgba(52,152,219,0.12)';
+  c.fillRect(FIELD_X2, GOAL_Y1, GOAL_DEPTH, GOAL_HH * 2);
+  c.strokeStyle = 'rgba(52,152,219,0.3)'; c.lineWidth = 0.5;
+  for (let i = 0; i < 6; i++) { const x = FIELD_X2 + i * (GOAL_DEPTH / 5); c.beginPath(); c.moveTo(x, GOAL_Y1); c.lineTo(x, GOAL_Y2); c.stroke(); }
+  for (let i = 0; i < 8; i++) { const y = GOAL_Y1 + i * (GOAL_HH * 2 / 7); c.beginPath(); c.moveTo(FIELD_X2, y); c.lineTo(FIELD_X2 + GOAL_DEPTH, y); c.stroke(); }
+  c.strokeStyle = '#3498db'; c.lineWidth = 2.5; c.beginPath();
+  c.moveTo(FIELD_X2, GOAL_Y1); c.lineTo(FIELD_X2 + GOAL_DEPTH, GOAL_Y1);
+  c.lineTo(FIELD_X2 + GOAL_DEPTH, GOAL_Y2); c.lineTo(FIELD_X2, GOAL_Y2); c.stroke();
+
+  for (const p of goalPosts) {
+    c.beginPath(); c.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+    c.fillStyle = '#ddd'; c.fill(); c.strokeStyle = '#aaa'; c.lineWidth = 1.5; c.stroke();
+  }
+}
+
+const bgCanvas = document.createElement('canvas');
+bgCanvas.width = W; bgCanvas.height = H;
+const bgCtx = bgCanvas.getContext('2d');
+drawStadium(bgCtx); drawField(bgCtx); drawGoals(bgCtx);
+
+// ============ DYNAMIC DRAWING ============
+
+function drawPlayer(p) {
+  const isRed = p.team === 'red';
+  const mainColor = isRed ? '#e74c3c' : '#3498db';
+  const darkColor = isRed ? '#c0392b' : '#2980b9';
+  const r = p.r || PLAYER_R;
+
+  ctx.beginPath(); ctx.arc(p.x, p.y, r + 1.5, 0, Math.PI * 2);
+  ctx.fillStyle = darkColor; ctx.fill();
+
+  ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+  ctx.fillStyle = mainColor; ctx.fill();
+
+  if (p.kicking) {
+    ctx.beginPath(); ctx.arc(p.x, p.y, KICK_RANGE, 0, Math.PI * 2);
+    ctx.strokeStyle = isRed ? 'rgba(231,76,60,0.3)' : 'rgba(52,152,219,0.3)';
+    ctx.lineWidth = 1.5; ctx.setLineDash([3, 3]); ctx.stroke(); ctx.setLineDash([]);
+  }
+
+  if (p.name) {
+    ctx.font = 'bold 11px "Segoe UI", sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#fff';
+    ctx.fillText(p.name, p.x, p.y - r - 6);
+  }
+}
+
+function drawBallObj(b) {
+  ctx.beginPath(); ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2);
+  ctx.fillStyle = '#fff'; ctx.fill();
+  ctx.strokeStyle = '#bbb'; ctx.lineWidth = 0.8; ctx.stroke();
+}
+
+function render(now) {
+  lerpState(now);
+  ctx.clearRect(0, 0, W, H);
+  ctx.drawImage(bgCanvas, 0, 0);
+  drawBallObj(gameBall);
+  for (const p of gamePlayers) {
+    drawPlayer(p);
+  }
+}
+
+function renderLoop(now) {
+  render(now);
+  if (currentGameState === 'playing' || currentGameState === 'ended') {
+    requestAnimationFrame(renderLoop);
+  } else {
+    rendering = false;
+  }
+}
+</script>
+</body>
+</html>
