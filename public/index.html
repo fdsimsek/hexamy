@@ -1230,6 +1230,9 @@
           case "chat":
             onChatMessage(msg);
             break;
+          case "myPing":
+            onMyPing(msg);
+            break;
         }
       };
 
@@ -1625,8 +1628,7 @@
       let lastScoreRed = -1,
         lastScoreBlue = -1,
         lastTimerText = "";
-      let lastNetStatsRenderAt = 0;
-      const NET_STATS_RENDER_INTERVAL_MS = 250;
+      
       const ZOOM_LEVELS = { Digit1: 1.6, Digit2: 1.25, Digit3: 1.0 };
       let currentZoomCode = "Digit2";
       let currentZoom = ZOOM_LEVELS[currentZoomCode];
@@ -1705,7 +1707,22 @@
         if (currentGameState === "playing") sendInput();
       }
 
+      let _inputDirty = false;
+      let _inputThrottleId = 0;
+      const INPUT_SEND_MS = 16;
+
       function sendInput() {
+        _inputDirty = true;
+        if (_inputThrottleId) return;
+        _flushInput();
+        _inputThrottleId = setTimeout(() => {
+          _inputThrottleId = 0;
+          if (_inputDirty) _flushInput();
+        }, INPUT_SEND_MS);
+      }
+
+      function _flushInput() {
+        _inputDirty = false;
         send({
           type: "input",
           keys: {
@@ -1826,12 +1843,7 @@
           ball: msg.ball,
           time: performance.now(),
         };
-        const now = performance.now();
-        stateTimestamp = now;
-        if (now - lastNetStatsRenderAt >= NET_STATS_RENDER_INTERVAL_MS) {
-          renderNetStats(msg.players);
-          lastNetStatsRenderAt = now;
-        }
+        stateTimestamp = performance.now();
 
         if (msg.scoreRed !== lastScoreRed) {
           document.getElementById("score-red").textContent = msg.scoreRed;
@@ -1935,55 +1947,47 @@
         }
       }
 
-      function getLagInfo(stablePing, rawPing) {
-        const refPing = Number.isFinite(stablePing) ? stablePing : rawPing;
-        if (!Number.isFinite(refPing)) return { text: "--", cls: "ok" };
-        const stableText = Number.isFinite(stablePing) ? `${stablePing} ms` : "--";
-        const rawText = Number.isFinite(rawPing) ? `${rawPing} ms` : "--";
-        const text = `${stableText} | raw ${rawText}`;
-        if (refPing < 60) return { text, cls: "good" };
-        if (refPing < 110) return { text, cls: "ok" };
-        if (refPing < 180) return { text, cls: "bad" };
-        return { text, cls: "critical" };
+      let myPing = null;
+      let myPingRaw = null;
+      const _netTitleEl = document.createElement("div");
+      _netTitleEl.className = "title";
+      _netTitleEl.textContent = "Ping";
+      const _netRowEl = document.createElement("div");
+      _netRowEl.className = "row";
+      const _netNameEl = document.createElement("span");
+      _netNameEl.className = "name";
+      const _netValueEl = document.createElement("span");
+      _netValueEl.className = "value good";
+      _netRowEl.appendChild(_netNameEl);
+      _netRowEl.appendChild(_netValueEl);
+
+      function onMyPing(msg) {
+        myPing = msg.ping;
+        myPingRaw = msg.pingRaw;
+        renderNetStats();
       }
 
-      function renderNetStats(players) {
-        if (!players || players.length === 0) {
+      function renderNetStats() {
+        if (currentGameState !== "playing") {
           netStatsEl.style.display = "none";
-          netStatsEl.replaceChildren();
           return;
         }
         netStatsEl.style.display = "block";
-        const sorted = [...players].sort((a, b) =>
-          a.name.localeCompare(b.name, "tr"),
-        );
+        const p = myPing;
+        const pr = myPingRaw;
+        const ref = Number.isFinite(p) ? p : pr;
+        const cls = !Number.isFinite(ref) ? "ok"
+          : ref < 60 ? "good" : ref < 110 ? "ok" : ref < 180 ? "bad" : "critical";
+        const stableText = Number.isFinite(p) ? `${p} ms` : "--";
+        const rawText = Number.isFinite(pr) ? `${pr} ms` : "--";
 
-        const title = document.createElement("div");
-        title.className = "title";
-        title.textContent = "Ağ Durumu";
-        const rows = [title];
+        _netNameEl.textContent = myName || "Ping";
+        _netValueEl.className = `value ${cls}`;
+        _netValueEl.textContent = `${stableText} | raw ${rawText}`;
 
-        for (const p of sorted) {
-          const lag = getLagInfo(p.ping, p.pingRaw);
-          const meMark = p.id === myId ? " (sen)" : "";
-          const row = document.createElement("div");
-          row.className = "row";
-
-          const nameEl = document.createElement("span");
-          nameEl.classList.add("name");
-          if (p.team === "red" || p.team === "blue") nameEl.classList.add(p.team);
-          nameEl.textContent = `${p.name ?? "Oyuncu"}${meMark}`;
-
-          const valueEl = document.createElement("span");
-          valueEl.classList.add("value", lag.cls);
-          valueEl.textContent = lag.text;
-
-          row.appendChild(nameEl);
-          row.appendChild(valueEl);
-          rows.push(row);
+        if (netStatsEl.childElementCount !== 2) {
+          netStatsEl.replaceChildren(_netTitleEl, _netRowEl);
         }
-
-        netStatsEl.replaceChildren(...rows);
       }
 
       const _lerpBall = { x: CX, y: CY, vx: 0, vy: 0, r: BALL_R };
@@ -2020,7 +2024,7 @@
         while (_lerpPlayers.length < currState.players.length) {
           _lerpPlayers.push({
             id: 0, name: "", team: "", x: 0, y: 0,
-            r: 0, kicking: false, ping: null, pingRaw: null,
+            r: 0, kicking: false,
           });
         }
         _lerpPlayers.length = currState.players.length;
@@ -2034,8 +2038,6 @@
           out.team = cp.team;
           out.r = cp.r;
           out.kicking = cp.kicking;
-          out.ping = cp.ping;
-          out.pingRaw = cp.pingRaw;
 
           if (!pp) {
             out.x = cp.x;

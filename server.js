@@ -17,7 +17,7 @@ const PING_INTERVAL_MS = Number(process.env.PING_INTERVAL_MS || 200);
 const PING_SCAN_INTERVAL_MS = Number(process.env.PING_SCAN_INTERVAL_MS || 50);
 const PING_JITTER_MS = Number(process.env.PING_JITTER_MS || 10);
 const PONG_TIMEOUT_MS = Number(process.env.PONG_TIMEOUT_MS || 6000);
-const PING_SMOOTHING_ALPHA = Number(process.env.PING_SMOOTHING_ALPHA || 0.5);
+const PING_SMOOTHING_ALPHA = Number(process.env.PING_SMOOTHING_ALPHA || 0.15);
 const PING_SPIKE_CAP_MULTIPLIER = Number(process.env.PING_SPIKE_CAP_MULTIPLIER || 3.0);
 const PING_BASELINE_DECAY = Number(process.env.PING_BASELINE_DECAY || 0.15);
 const PING_DISPLAY_FLOOR_MS = Number(process.env.PING_DISPLAY_FLOOR_MS || 0);
@@ -117,7 +117,7 @@ let scoreBlue = 0;
 let gameTime = 0;
 let goalScoredState = null;
 let goalScoredTimer = 0;
-let gameLoopTimeout = null;
+let gameLoopRunning = false;
 let pingInterval = null;
 let gameSettings = { ...DEFAULT_GAME_SETTINGS };
 let kickoffPending = false;
@@ -569,6 +569,9 @@ const _bcastMsg = {
   kickoffTeam: "",
 };
 
+let _pingBcastCounter = 0;
+const PING_BCAST_EVERY = 6;
+
 function broadcastState() {
   if (gameState !== "playing") return;
 
@@ -577,8 +580,7 @@ function broadcastState() {
     if (c.team && c.player) {
       if (len >= _bcastPlayersPool.length) {
         _bcastPlayersPool.push({
-          id: 0, name: "", team: "", x: 0, y: 0, r: 0,
-          kicking: false, ping: null, pingRaw: null,
+          id: 0, name: "", team: "", x: 0, y: 0, r: 0, kicking: false,
         });
       }
       const entry = _bcastPlayersPool[len];
@@ -589,8 +591,6 @@ function broadcastState() {
       entry.y = Math.round(c.player.y * 10) / 10;
       entry.r = c.player.r;
       entry.kicking = c.player.kicking || false;
-      entry.ping = c.pingMs ?? null;
-      entry.pingRaw = Number.isFinite(c.pingRawMs) ? Math.round(c.pingRawMs) : null;
       len++;
     }
   }
@@ -610,6 +610,19 @@ function broadcastState() {
   _bcastMsg.kickoffTeam = kickoffTeam;
 
   broadcast(_bcastMsg);
+
+  _pingBcastCounter++;
+  if (_pingBcastCounter >= PING_BCAST_EVERY) {
+    _pingBcastCounter = 0;
+    for (const [ws, c] of clients) {
+      if (ws.readyState !== 1 || !c.team) continue;
+      const p = c.pingMs ?? null;
+      const pr = Number.isFinite(c.pingRawMs) ? Math.round(c.pingRawMs) : null;
+      try {
+        ws.send(`{"type":"myPing","ping":${p},"pingRaw":${pr}}`);
+      } catch {}
+    }
+  }
 }
 
 // ============ LOBBY & NETWORKING ============
@@ -681,23 +694,24 @@ function startGameLoop() {
   broadcast({ type: "gameStart" });
 
   stopGameLoop();
+  gameLoopRunning = true;
 
   let lastHrNs = process.hrtime.bigint();
   let accumulator = 0;
   let tickCount = 0;
 
   function tick() {
+    if (!gameLoopRunning) return;
+
     const nowNs = process.hrtime.bigint();
     const elapsedMs = Number(nowNs - lastHrNs) / 1e6;
     lastHrNs = nowNs;
     accumulator += elapsedMs;
 
-    let steps = 0;
-    while (accumulator >= TICK_MS && steps < MAX_CATCHUP_STEPS) {
+    if (accumulator >= TICK_MS) {
       gameUpdate();
       accumulator -= TICK_MS;
       tickCount++;
-      steps++;
       if (tickCount % BROADCAST_EVERY_N_TICKS === 0) {
         broadcastState();
       }
@@ -707,20 +721,20 @@ function startGameLoop() {
       accumulator = 0;
     }
 
-    if (gameState === "playing") {
-      const nextIn = Math.max(1, TICK_MS - accumulator);
-      gameLoopTimeout = setTimeout(tick, nextIn);
+    if (gameState === "playing" && gameLoopRunning) {
+      if (accumulator >= TICK_MS) {
+        setImmediate(tick);
+      } else {
+        setTimeout(tick, Math.max(1, TICK_MS - accumulator));
+      }
     }
   }
 
-  gameLoopTimeout = setTimeout(tick, TICK_MS);
+  setTimeout(tick, TICK_MS);
 }
 
 function stopGameLoop() {
-  if (gameLoopTimeout) {
-    clearTimeout(gameLoopTimeout);
-    gameLoopTimeout = null;
-  }
+  gameLoopRunning = false;
 }
 
 function isLobbyOrEnded() {
@@ -773,16 +787,15 @@ function handleRestart(client) {
 
 function handleInput(client, msg) {
   if (gameState !== "playing" || !msg.keys) return;
-  client.keys = {
-    up: !!msg.keys.up,
-    down: !!msg.keys.down,
-    left: !!msg.keys.left,
-    right: !!msg.keys.right,
-    pass: !!msg.keys.pass,
-    throughPass: !!msg.keys.throughPass,
-    shoot: !!msg.keys.shoot,
-    kick: !!msg.keys.kick,
-  };
+  const k = client.keys;
+  k.up = !!msg.keys.up;
+  k.down = !!msg.keys.down;
+  k.left = !!msg.keys.left;
+  k.right = !!msg.keys.right;
+  k.pass = !!msg.keys.pass;
+  k.throughPass = !!msg.keys.throughPass;
+  k.shoot = !!msg.keys.shoot;
+  k.kick = !!msg.keys.kick;
 }
 
 function handleSettings(client, msg) {
@@ -945,39 +958,26 @@ wss.on("connection", (ws) => {
   ws.on("pong", () => {
     const client = clients.get(ws);
     if (!client) return;
-    const now = Date.now();
-    client.lastPongAt = now;
+    client.lastPongAt = Date.now();
     if (!client.awaitingPong) return;
     client.awaitingPong = false;
 
-    let rawPing = Math.max(0, Math.round(now - client.lastPingSentAt));
+    let rawPing;
     if (typeof client.lastPingHrNs === "bigint") {
-      const elapsedNs = process.hrtime.bigint() - client.lastPingHrNs;
-      rawPing = Math.max(0, Number(elapsedNs) / 1e6);
-    }
-    rawPing = Math.round(rawPing);
-    client.pingRawMs = rawPing;
-    if (!Number.isFinite(client.pingBaselineMs)) {
-      client.pingBaselineMs = rawPing;
-    } else if (rawPing <= client.pingBaselineMs) {
-      client.pingBaselineMs = rawPing;
+      rawPing = Number(process.hrtime.bigint() - client.lastPingHrNs) / 1e6;
     } else {
-      client.pingBaselineMs += (rawPing - client.pingBaselineMs) * PING_BASELINE_DECAY;
+      rawPing = Date.now() - client.lastPingSentAt;
     }
-    const normalizedRaw = Math.max(
-      PING_DISPLAY_FLOOR_MS,
-      rawPing - client.pingBaselineMs + PING_DISPLAY_FLOOR_MS,
-    );
+    rawPing = Math.max(0, Math.round(rawPing));
+    client.pingRawMs = rawPing;
+
     if (!Number.isFinite(client.pingMs)) {
-      client.pingMs = Math.round(normalizedRaw);
-      return;
+      client.pingMs = rawPing;
+    } else {
+      client.pingMs = Math.max(0, Math.round(
+        client.pingMs + (rawPing - client.pingMs) * PING_SMOOTHING_ALPHA,
+      ));
     }
-    const cappedRaw = Math.min(
-      normalizedRaw,
-      Math.round(client.pingMs * PING_SPIKE_CAP_MULTIPLIER),
-    );
-    const smooth = client.pingMs + (cappedRaw - client.pingMs) * PING_SMOOTHING_ALPHA;
-    client.pingMs = Math.max(0, Math.round(smooth));
   });
 
   ws.on("close", () => {
