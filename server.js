@@ -17,6 +17,7 @@ const PING_SMOOTHING_ALPHA = Number(process.env.PING_SMOOTHING_ALPHA || 0.25);
 const PING_SPIKE_CAP_MULTIPLIER = Number(process.env.PING_SPIKE_CAP_MULTIPLIER || 1.5);
 const PING_BASELINE_DECAY = Number(process.env.PING_BASELINE_DECAY || 0.08);
 const PING_DISPLAY_FLOOR_MS = Number(process.env.PING_DISPLAY_FLOOR_MS || 0);
+const PING_MIN_GAP_MS = Number(process.env.PING_MIN_GAP_MS || 350);
 const RATE_WINDOW_MS = Number(process.env.RATE_WINDOW_MS || 1000);
 const RATE_LIMIT_PER_WINDOW = {
   input: Number(process.env.RATE_LIMIT_INPUT || 120),
@@ -557,6 +558,7 @@ function broadcastState() {
         r: c.player.r,
         kicking: c.player.kicking || false,
         ping: c.pingMs ?? null,
+        pingRaw: Number.isFinite(c.pingRawMs) ? Math.round(c.pingRawMs) : null,
       });
     }
   }
@@ -782,8 +784,10 @@ function startPingLoop() {
         continue;
       }
       if (ws.readyState === 1 && !client.awaitingPong) {
+        if (now - client.lastPingSentAt < PING_MIN_GAP_MS) continue;
         client.awaitingPong = true;
         client.lastPingSentAt = now;
+        client.lastPingHrNs = process.hrtime.bigint();
         ws.ping();
       }
     }
@@ -830,6 +834,7 @@ wss.on("connection", (ws) => {
     pingBaselineMs: null,
     lastPongAt: Date.now(),
     lastPingSentAt: 0,
+    lastPingHrNs: null,
     awaitingPong: false,
     rateLimitWindowStart: Date.now(),
     rateLimitCounts: {},
@@ -873,7 +878,12 @@ wss.on("connection", (ws) => {
     if (!client.awaitingPong) return;
     client.awaitingPong = false;
 
-    const rawPing = Math.max(0, Math.round(now - client.lastPingSentAt));
+    let rawPing = Math.max(0, Math.round(now - client.lastPingSentAt));
+    if (typeof client.lastPingHrNs === "bigint") {
+      const elapsedNs = process.hrtime.bigint() - client.lastPingHrNs;
+      rawPing = Math.max(0, Number(elapsedNs) / 1e6);
+    }
+    rawPing = Math.round(rawPing);
     client.pingRawMs = rawPing;
     if (!Number.isFinite(client.pingBaselineMs)) {
       client.pingBaselineMs = rawPing;

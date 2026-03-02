@@ -500,6 +500,53 @@
         transform: translate(-50%, -50%) scale(1);
         opacity: 1;
       }
+      #goal-text.troll {
+        letter-spacing: 3px;
+        filter: hue-rotate(45deg) saturate(1.4);
+      }
+      body.goal-chaos {
+        animation: goalShake 0.45s linear 0s 2;
+      }
+      .troll-burst {
+        position: fixed;
+        top: -22px;
+        z-index: 70;
+        pointer-events: none;
+        font-size: 22px;
+        opacity: 0.92;
+        text-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
+        animation: trollFall 1200ms ease-in forwards;
+      }
+      @keyframes goalShake {
+        0% {
+          transform: translate(0, 0);
+        }
+        20% {
+          transform: translate(-6px, 2px);
+        }
+        40% {
+          transform: translate(6px, -2px);
+        }
+        60% {
+          transform: translate(-4px, -2px);
+        }
+        80% {
+          transform: translate(4px, 2px);
+        }
+        100% {
+          transform: translate(0, 0);
+        }
+      }
+      @keyframes trollFall {
+        0% {
+          transform: translateY(-10px) rotate(0deg);
+          opacity: 0.95;
+        }
+        100% {
+          transform: translateY(72vh) rotate(220deg);
+          opacity: 0;
+        }
+      }
 
       #winner-overlay {
         position: fixed;
@@ -560,6 +607,32 @@
         color: #cfd7ff;
         line-height: 1.5;
         pointer-events: none;
+      }
+      #fps-stats {
+        position: fixed;
+        left: 14px;
+        top: 14px;
+        z-index: 125;
+        min-width: 82px;
+        padding: 6px 8px;
+        border-radius: 10px;
+        background: rgba(6, 9, 18, 0.78);
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        backdrop-filter: blur(5px);
+        color: #d8e3ff;
+        pointer-events: none;
+        font-size: 12px;
+      }
+      #fps-stats .label {
+        color: #8ea1ff;
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.8px;
+        font-weight: 700;
+      }
+      #fps-stats .value {
+        margin-top: 2px;
+        font-weight: 800;
       }
       #net-stats .title {
         color: #8ea1ff;
@@ -929,6 +1002,10 @@
       <p class="win-sub" id="winner-sub"></p>
       <button id="restartBtn" style="display: none">Lobiye Dön</button>
     </div>
+    <div id="fps-stats">
+      <div class="label">FPS</div>
+      <div class="value" id="fps-value">--</div>
+    </div>
     <div id="net-stats"></div>
     <div id="chat-panel">
       <div id="chat-header">Sohbet</div>
@@ -956,6 +1033,7 @@
       let myTeam = null;
       let currentGameState = "lobby";
       const netStatsEl = document.getElementById("net-stats");
+      const fpsValueEl = document.getElementById("fps-value");
       const chatMessagesEl = document.getElementById("chat-messages");
       const chatFormEl = document.getElementById("chat-form");
       const chatInputEl = document.getElementById("chat-input");
@@ -1184,7 +1262,9 @@
       // ============ GAME CANVAS ============
 
       const canvas = document.getElementById("gameCanvas");
-      const ctx = canvas.getContext("2d");
+      const ctx =
+        canvas.getContext("2d", { alpha: false, desynchronized: true }) ||
+        canvas.getContext("2d");
       const W = 1100,
         H = 640;
       const CX = W / 2,
@@ -1273,9 +1353,15 @@
       let gamePlayers = [];
       let gameBall = { x: CX, y: CY, vx: 0, vy: 0, r: BALL_R };
       let rendering = false;
+      let lastRenderTs = 0;
+      let fpsSampleSum = 0;
+      let fpsSampleCount = 0;
+      let fpsSampleElapsed = 0;
       let lastScoreRed = -1,
         lastScoreBlue = -1,
         lastTimerText = "";
+      let lastNetStatsRenderAt = 0;
+      const NET_STATS_RENDER_INTERVAL_MS = 250;
       const ZOOM_LEVELS = { Digit1: 1.6, Digit2: 1.25, Digit3: 1.0 };
       let currentZoomCode = "Digit2";
       let currentZoom = ZOOM_LEVELS[currentZoomCode];
@@ -1285,6 +1371,7 @@
       const keys = {};
       let goalFlashTimerId = null;
       let goalTextTimerId = null;
+      let goalTrollCleanupTimerId = null;
       let winnerShowTimerId = null;
       const mobileInputState = {
         up: false,
@@ -1447,6 +1534,11 @@
         document.getElementById("game-container").classList.add("show");
         document.getElementById("winner-overlay").classList.remove("show");
         document.getElementById("restartBtn").style.display = "none";
+        lastRenderTs = 0;
+        fpsSampleSum = 0;
+        fpsSampleCount = 0;
+        fpsSampleElapsed = 0;
+        if (fpsValueEl) fpsValueEl.textContent = "--";
         if (winnerShowTimerId) {
           clearTimeout(winnerShowTimerId);
           winnerShowTimerId = null;
@@ -1464,8 +1556,12 @@
           ball: msg.ball,
           time: performance.now(),
         };
-        stateTimestamp = performance.now();
-        renderNetStats(msg.players);
+        const now = performance.now();
+        stateTimestamp = now;
+        if (now - lastNetStatsRenderAt >= NET_STATS_RENDER_INTERVAL_MS) {
+          renderNetStats(msg.players);
+          lastNetStatsRenderAt = now;
+        }
 
         if (msg.scoreRed !== lastScoreRed) {
           document.getElementById("score-red").textContent = msg.scoreRed;
@@ -1569,12 +1665,16 @@
         }
       }
 
-      function getLagInfo(ping) {
-        if (!Number.isFinite(ping)) return { text: "--", cls: "ok" };
-        if (ping < 60) return { text: `${ping} ms (iyi)`, cls: "good" };
-        if (ping < 110) return { text: `${ping} ms (orta)`, cls: "ok" };
-        if (ping < 180) return { text: `${ping} ms (lag)`, cls: "bad" };
-        return { text: `${ping} ms (yüksek lag)`, cls: "critical" };
+      function getLagInfo(stablePing, rawPing) {
+        const refPing = Number.isFinite(stablePing) ? stablePing : rawPing;
+        if (!Number.isFinite(refPing)) return { text: "--", cls: "ok" };
+        const stableText = Number.isFinite(stablePing) ? `${stablePing} ms` : "--";
+        const rawText = Number.isFinite(rawPing) ? `${rawPing} ms` : "--";
+        const text = `${stableText} | raw ${rawText}`;
+        if (refPing < 60) return { text, cls: "good" };
+        if (refPing < 110) return { text, cls: "ok" };
+        if (refPing < 180) return { text, cls: "bad" };
+        return { text, cls: "critical" };
       }
 
       function renderNetStats(players) {
@@ -1594,7 +1694,7 @@
         const rows = [title];
 
         for (const p of sorted) {
-          const lag = getLagInfo(p.ping);
+          const lag = getLagInfo(p.ping, p.pingRaw);
           const meMark = p.id === myId ? " (sen)" : "";
           const row = document.createElement("div");
           row.className = "row";
@@ -1651,20 +1751,55 @@
       function onGoal(msg) {
         const flash = document.getElementById("goal-flash");
         const text = document.getElementById("goal-text");
+        const chants = [
+          "LAG VAR DEDILER, GOL CIKTI",
+          "KALECI AFK MI",
+          "DEFANS NEREDE",
+          "BU NE VURUS",
+          "RIP SAVUNMA",
+          "GG EZ",
+        ];
+        const chant = chants[Math.floor(Math.random() * chants.length)];
+
         if (goalFlashTimerId) clearTimeout(goalFlashTimerId);
         if (goalTextTimerId) clearTimeout(goalTextTimerId);
+        if (goalTrollCleanupTimerId) clearTimeout(goalTrollCleanupTimerId);
+        document.querySelectorAll(".troll-burst").forEach((el) => el.remove());
         flash.className = msg.team;
         flash.style.opacity = "1";
         text.classList.add("show");
+        text.classList.add("troll");
+        text.textContent = `${msg.team === "red" ? "🔴" : "🔵"} ${chant}`;
         text.style.color = msg.team === "red" ? "#e74c3c" : "#3498db";
+        document.body.classList.remove("goal-chaos");
+        void document.body.offsetWidth;
+        document.body.classList.add("goal-chaos");
+
+        const emojis = msg.team === "red" ? ["🤣", "🔥", "🧨", "🟥"] : ["🤣", "⚡", "🎯", "🟦"];
+        for (let i = 0; i < 14; i++) {
+          const burst = document.createElement("span");
+          burst.className = "troll-burst";
+          burst.textContent = emojis[Math.floor(Math.random() * emojis.length)];
+          burst.style.left = `${Math.random() * 100}%`;
+          burst.style.animationDelay = `${Math.random() * 200}ms`;
+          document.body.appendChild(burst);
+        }
+
         goalFlashTimerId = setTimeout(() => {
           flash.style.opacity = "0";
           goalFlashTimerId = null;
         }, 1500);
         goalTextTimerId = setTimeout(() => {
           text.classList.remove("show");
+          text.classList.remove("troll");
+          text.textContent = "GOL!";
+          document.body.classList.remove("goal-chaos");
           goalTextTimerId = null;
         }, 5000);
+        goalTrollCleanupTimerId = setTimeout(() => {
+          document.querySelectorAll(".troll-burst").forEach((el) => el.remove());
+          goalTrollCleanupTimerId = null;
+        }, 1700);
       }
 
       function onWinner(msg) {
@@ -2030,6 +2165,22 @@
       }
 
       function renderLoop(now) {
+        if (lastRenderTs > 0) {
+          const dt = now - lastRenderTs;
+          if (dt > 0 && dt < 1000) {
+            fpsSampleSum += 1000 / dt;
+            fpsSampleCount += 1;
+            fpsSampleElapsed += dt;
+            if (fpsSampleElapsed >= 300) {
+              const avgFps = Math.round(fpsSampleSum / fpsSampleCount);
+              if (fpsValueEl) fpsValueEl.textContent = String(avgFps);
+              fpsSampleSum = 0;
+              fpsSampleCount = 0;
+              fpsSampleElapsed = 0;
+            }
+          }
+        }
+        lastRenderTs = now;
         render(now);
         if (currentGameState === "playing" || currentGameState === "ended") {
           requestAnimationFrame(renderLoop);
