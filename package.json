@@ -4,7 +4,11 @@
   "description": "LAN Multiplayer HaxBall",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "lint": "node --check server.js",
+    "test": "node --test",
+    "check": "npm run lint && npm run test"
   },
   "dependencies": {
     "express": "^4.21.0",

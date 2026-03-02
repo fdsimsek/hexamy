@@ -397,6 +397,53 @@
         gap: 6px;
       }
 
+      #mobile-controls {
+        display: none;
+        width: min(92vw, 560px);
+        margin-top: 10px;
+        align-items: flex-end;
+        justify-content: space-between;
+        gap: 20px;
+      }
+      #mobile-joystick {
+        width: 120px;
+        height: 120px;
+        border-radius: 50%;
+        border: 2px solid rgba(255, 255, 255, 0.2);
+        background: rgba(0, 0, 0, 0.25);
+        position: relative;
+        touch-action: none;
+      }
+      #mobile-joystick-knob {
+        width: 54px;
+        height: 54px;
+        border-radius: 50%;
+        background: rgba(255, 255, 255, 0.3);
+        border: 2px solid rgba(255, 255, 255, 0.45);
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        transform: translate(-50%, -50%);
+        box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
+      }
+      #mobile-kick-btn {
+        width: 84px;
+        height: 84px;
+        border-radius: 50%;
+        border: 2px solid rgba(255, 255, 255, 0.34);
+        background: radial-gradient(circle at 30% 30%, #ffb347, #e74c3c 70%);
+        color: #fff;
+        font-size: 20px;
+        font-weight: 800;
+        cursor: pointer;
+        touch-action: none;
+      }
+      #mobile-kick-btn:active,
+      #mobile-kick-btn.pressed {
+        transform: scale(0.96);
+        filter: brightness(1.08);
+      }
+
       kbd {
         background: rgba(255, 255, 255, 0.08);
         padding: 1px 6px;
@@ -620,6 +667,22 @@
       #chat-send-btn:hover {
         background: #5c70e7;
       }
+
+      @media (max-width: 900px), (pointer: coarse) {
+        body.touch-device #controls-info {
+          display: none;
+        }
+        body.touch-device #mobile-controls {
+          display: flex;
+        }
+        body.touch-device #chat-panel {
+          width: min(92vw, 380px);
+          left: 50%;
+          right: auto;
+          transform: translateX(-50%);
+          bottom: 10px;
+        }
+      }
     </style>
   </head>
   <body>
@@ -773,8 +836,9 @@
         <p class="lobby-info">
           Oda sahibi maçı başlatır. Her takımda en az 1, en fazla 4 kişi.<br />
           Hareket: <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> veya
-          <kbd>↑</kbd><kbd>←</kbd><kbd>↓</kbd><kbd>→</kbd> &nbsp; Şut:
-          <kbd>Space</kbd> veya <kbd>L</kbd>
+          <kbd>↑</kbd><kbd>←</kbd><kbd>↓</kbd><kbd>→</kbd> &nbsp; Pas:
+          <kbd>J</kbd> &nbsp; Ara Pas: <kbd>K</kbd> &nbsp; Şut:
+          <kbd>L</kbd>
         </p>
       </div>
     </div>
@@ -804,7 +868,7 @@
           >
         </div>
         <div class="ctrl-group">
-          <span>Şut: <kbd>Space</kbd> veya <kbd>L</kbd></span>
+          <span>Pas: <kbd>J</kbd> · Ara Pas: <kbd>K</kbd> · Şut: <kbd>L</kbd></span>
         </div>
         <div class="ctrl-group">
           <span
@@ -812,6 +876,12 @@
             <kbd>3</kbd> Uzak</span
           >
         </div>
+      </div>
+      <div id="mobile-controls">
+        <div id="mobile-joystick">
+          <div id="mobile-joystick-knob"></div>
+        </div>
+        <button id="mobile-kick-btn" type="button">Şut</button>
       </div>
     </div>
 
@@ -842,7 +912,8 @@
     <script>
       // ============ CONNECTION ============
 
-      const ws = new WebSocket(`ws://${location.host}`);
+      const wsProtocol = location.protocol === "https:" ? "wss:" : "ws:";
+      const ws = new WebSocket(`${wsProtocol}//${location.host}`);
       let myId = null;
       let currentHostId = null;
       let myName = "";
@@ -855,6 +926,10 @@
       const adminSettingsEl = document.getElementById("admin-settings");
       const settingsRoleNoteEl = document.getElementById("settings-role-note");
       const resetSettingsBtn = document.getElementById("reset-settings-btn");
+      const mobileControlsEl = document.getElementById("mobile-controls");
+      const mobileJoystickEl = document.getElementById("mobile-joystick");
+      const mobileJoystickKnobEl = document.getElementById("mobile-joystick-knob");
+      const mobileKickBtnEl = document.getElementById("mobile-kick-btn");
       const settingsInputs = Array.from(
         document.querySelectorAll("#admin-settings [data-setting]"),
       );
@@ -987,6 +1062,7 @@
         send({ type: "resetSettings" });
       });
       setupSettingsControls();
+      setupMobileControls();
 
       function onLobbyUpdate(msg) {
         currentHostId = msg.hostId;
@@ -1153,6 +1229,18 @@
       // ============ INPUT ============
 
       const keys = {};
+      let goalFlashTimerId = null;
+      let goalTextTimerId = null;
+      let winnerShowTimerId = null;
+      const mobileInputState = {
+        up: false,
+        down: false,
+        left: false,
+        right: false,
+        pass: false,
+        throughPass: false,
+        shoot: false,
+      };
       document.addEventListener("keydown", (e) => {
         if (isTextEntryFocused()) {
           if (e.code === "Escape" && document.activeElement === chatInputEl) {
@@ -1177,6 +1265,11 @@
         keys[e.code] = false;
         sendInput();
       });
+      window.addEventListener("blur", clearGameplayKeys);
+      document.addEventListener("visibilitychange", () => {
+        if (document.hidden) clearGameplayKeys();
+      });
+      window.addEventListener("pagehide", clearGameplayKeys);
 
       function clearGameplayKeys() {
         keys["KeyW"] = false;
@@ -1187,8 +1280,17 @@
         keys["ArrowLeft"] = false;
         keys["ArrowDown"] = false;
         keys["ArrowRight"] = false;
-        keys["Space"] = false;
+        keys["KeyJ"] = false;
+        keys["KeyK"] = false;
         keys["KeyL"] = false;
+        mobileInputState.up = false;
+        mobileInputState.down = false;
+        mobileInputState.left = false;
+        mobileInputState.right = false;
+        mobileInputState.pass = false;
+        mobileInputState.throughPass = false;
+        mobileInputState.shoot = false;
+        resetMobileJoystick();
         if (currentGameState === "playing") sendInput();
       }
 
@@ -1196,13 +1298,88 @@
         send({
           type: "input",
           keys: {
-            up: !!(keys["KeyW"] || keys["ArrowUp"]),
-            down: !!(keys["KeyS"] || keys["ArrowDown"]),
-            left: !!(keys["KeyA"] || keys["ArrowLeft"]),
-            right: !!(keys["KeyD"] || keys["ArrowRight"]),
-            kick: !!(keys["Space"] || keys["KeyL"]),
+            up: !!(keys["KeyW"] || keys["ArrowUp"] || mobileInputState.up),
+            down: !!(keys["KeyS"] || keys["ArrowDown"] || mobileInputState.down),
+            left: !!(keys["KeyA"] || keys["ArrowLeft"] || mobileInputState.left),
+            right: !!(keys["KeyD"] || keys["ArrowRight"] || mobileInputState.right),
+            pass: !!(keys["KeyJ"] || mobileInputState.pass),
+            throughPass: !!(keys["KeyK"] || mobileInputState.throughPass),
+            shoot: !!(keys["KeyL"] || mobileInputState.shoot),
           },
         });
+      }
+
+      function resetMobileJoystick() {
+        if (!mobileJoystickKnobEl) return;
+        mobileJoystickKnobEl.style.transform = "translate(-50%, -50%)";
+      }
+
+      function setMobileMoveFromVector(dx, dy) {
+        const threshold = 14;
+        mobileInputState.left = dx < -threshold;
+        mobileInputState.right = dx > threshold;
+        mobileInputState.up = dy < -threshold;
+        mobileInputState.down = dy > threshold;
+      }
+
+      function setupMobileControls() {
+        const hasTouch = window.matchMedia("(pointer: coarse)").matches;
+        if (!hasTouch) return;
+        document.body.classList.add("touch-device");
+        if (!mobileControlsEl || !mobileJoystickEl || !mobileJoystickKnobEl || !mobileKickBtnEl) {
+          return;
+        }
+
+        let joystickPointerId = null;
+        const radius = 44;
+        const onJoystickPointerMove = (e) => {
+          if (e.pointerId !== joystickPointerId) return;
+          const rect = mobileJoystickEl.getBoundingClientRect();
+          const centerX = rect.left + rect.width / 2;
+          const centerY = rect.top + rect.height / 2;
+          let dx = e.clientX - centerX;
+          let dy = e.clientY - centerY;
+          const len = Math.hypot(dx, dy);
+          if (len > radius) {
+            const scale = radius / len;
+            dx *= scale;
+            dy *= scale;
+          }
+          mobileJoystickKnobEl.style.transform = `translate(calc(-50% + ${dx}px), calc(-50% + ${dy}px))`;
+          setMobileMoveFromVector(dx, dy);
+          if (currentGameState === "playing") sendInput();
+        };
+        const onJoystickRelease = (e) => {
+          if (e.pointerId !== joystickPointerId) return;
+          joystickPointerId = null;
+          mobileInputState.left = false;
+          mobileInputState.right = false;
+          mobileInputState.up = false;
+          mobileInputState.down = false;
+          resetMobileJoystick();
+          if (currentGameState === "playing") sendInput();
+        };
+
+        mobileJoystickEl.addEventListener("pointerdown", (e) => {
+          joystickPointerId = e.pointerId;
+          mobileJoystickEl.setPointerCapture(e.pointerId);
+          onJoystickPointerMove(e);
+        });
+        mobileJoystickEl.addEventListener("pointermove", onJoystickPointerMove);
+        mobileJoystickEl.addEventListener("pointerup", onJoystickRelease);
+        mobileJoystickEl.addEventListener("pointercancel", onJoystickRelease);
+
+        const setMobileKick = (pressed) => {
+          mobileInputState.shoot = pressed;
+          mobileKickBtnEl.classList.toggle("pressed", pressed);
+          if (currentGameState === "playing") sendInput();
+        };
+        mobileKickBtnEl.addEventListener("pointerdown", (e) => {
+          mobileKickBtnEl.setPointerCapture(e.pointerId);
+          setMobileKick(true);
+        });
+        mobileKickBtnEl.addEventListener("pointerup", () => setMobileKick(false));
+        mobileKickBtnEl.addEventListener("pointercancel", () => setMobileKick(false));
       }
 
       // ============ GAME EVENTS ============
@@ -1217,6 +1394,10 @@
         document.getElementById("game-container").classList.add("show");
         document.getElementById("winner-overlay").classList.remove("show");
         document.getElementById("restartBtn").style.display = "none";
+        if (winnerShowTimerId) {
+          clearTimeout(winnerShowTimerId);
+          winnerShowTimerId = null;
+        }
         if (!rendering) {
           rendering = true;
           renderLoop();
@@ -1346,24 +1527,40 @@
       function renderNetStats(players) {
         if (!players || players.length === 0) {
           netStatsEl.style.display = "none";
+          netStatsEl.replaceChildren();
           return;
         }
         netStatsEl.style.display = "block";
         const sorted = [...players].sort((a, b) =>
           a.name.localeCompare(b.name, "tr"),
         );
-        const lines = ['<div class="title">Ağ Durumu</div>'];
+
+        const title = document.createElement("div");
+        title.className = "title";
+        title.textContent = "Ağ Durumu";
+        const rows = [title];
+
         for (const p of sorted) {
           const lag = getLagInfo(p.ping);
           const meMark = p.id === myId ? " (sen)" : "";
-          lines.push(
-            `<div class="row">` +
-              `<span class="name ${p.team}">${p.name}${meMark}</span>` +
-              `<span class="value ${lag.cls}">${lag.text}</span>` +
-              `</div>`,
-          );
+          const row = document.createElement("div");
+          row.className = "row";
+
+          const nameEl = document.createElement("span");
+          nameEl.classList.add("name");
+          if (p.team === "red" || p.team === "blue") nameEl.classList.add(p.team);
+          nameEl.textContent = `${p.name ?? "Oyuncu"}${meMark}`;
+
+          const valueEl = document.createElement("span");
+          valueEl.classList.add("value", lag.cls);
+          valueEl.textContent = lag.text;
+
+          row.appendChild(nameEl);
+          row.appendChild(valueEl);
+          rows.push(row);
         }
-        netStatsEl.innerHTML = lines.join("");
+
+        netStatsEl.replaceChildren(...rows);
       }
 
       function lerpState(now) {
@@ -1385,8 +1582,10 @@
           r: currState.ball.r,
         };
 
+        const prevPlayersById = new Map();
+        for (const p of prevState.players) prevPlayersById.set(p.id, p);
         gamePlayers = currState.players.map((cp) => {
-          const pp = prevState.players.find((p) => p.id === cp.id);
+          const pp = prevPlayersById.get(cp.id);
           if (!pp) return cp;
           return {
             ...cp,
@@ -1399,15 +1598,19 @@
       function onGoal(msg) {
         const flash = document.getElementById("goal-flash");
         const text = document.getElementById("goal-text");
+        if (goalFlashTimerId) clearTimeout(goalFlashTimerId);
+        if (goalTextTimerId) clearTimeout(goalTextTimerId);
         flash.className = msg.team;
         flash.style.opacity = "1";
         text.classList.add("show");
         text.style.color = msg.team === "red" ? "#e74c3c" : "#3498db";
-        setTimeout(() => {
+        goalFlashTimerId = setTimeout(() => {
           flash.style.opacity = "0";
+          goalFlashTimerId = null;
         }, 1500);
-        setTimeout(() => {
+        goalTextTimerId = setTimeout(() => {
           text.classList.remove("show");
+          goalTextTimerId = null;
         }, 5000);
       }
 
@@ -1422,7 +1625,11 @@
         const m = Math.floor(msg.time / 60),
           sec = Math.floor(msg.time % 60);
         s.textContent = `${msg.scoreRed} - ${msg.scoreBlue} · ${m}:${sec.toString().padStart(2, "0")}`;
-        setTimeout(() => ov.classList.add("show"), 800);
+        if (winnerShowTimerId) clearTimeout(winnerShowTimerId);
+        winnerShowTimerId = setTimeout(() => {
+          ov.classList.add("show");
+          winnerShowTimerId = null;
+        }, 800);
 
         if (myId === currentHostId) {
           document.getElementById("restartBtn").style.display = "block";
@@ -1432,26 +1639,34 @@
       // ============ STADIUM DRAWING (pre-rendered) ============
 
       const seats = [];
+      const seatsByColor = {};
+      const stadiumLayerCanvas = document.createElement("canvas");
+      stadiumLayerCanvas.width = W;
+      stadiumLayerCanvas.height = H;
+      const stadiumLayerCtx = stadiumLayerCanvas.getContext("2d");
+      let stadiumLayerReady = false;
       function generateSeats() {
         const outerRx = FIELD_HW + 170,
           outerRy = FIELD_HH + 170;
         const innerRx = FIELD_HW + 40,
           innerRy = FIELD_HH + 40;
-        function addTier(iRx, iRy, oRx, oRy, c1, c2) {
+        function addTier(iRx, iRy, oRx, oRy, palette) {
           const midRx = (oRx + iRx) / 2;
-          const gap = 14;
+          const gap = 12;
           for (let angle = 0; angle < Math.PI * 2; angle += gap / midRx) {
-            for (let row = 0; row < 2; row++) {
-              const rx = iRx + ((oRx - iRx) * (row + 0.5)) / 2;
-              const ry = iRy + ((oRy - iRy) * (row + 0.5)) / 2;
+            for (let row = 0; row < 3; row++) {
+              const rx = iRx + ((oRx - iRx) * (row + 0.5)) / 3;
+              const ry = iRy + ((oRy - iRy) * (row + 0.5)) / 3;
               const sx = CX + Math.cos(angle) * rx;
               const sy = CY + Math.sin(angle) * ry;
               if (sx < 8 || sx > W - 8 || sy < 8 || sy > H - 8) continue;
+              const color = palette[Math.floor(Math.random() * palette.length)];
               seats.push({
                 x: sx,
                 y: sy,
-                color: Math.random() > 0.3 ? c1 : c2,
+                color,
               });
+              if (!seatsByColor[color]) seatsByColor[color] = [];
             }
           }
         }
@@ -1460,43 +1675,51 @@
           innerRy + 60,
           outerRx + 10,
           outerRy + 10,
-          "#002D59",
-          "#001a3a",
+          ["#BFC7D5", "#98A7C5", "#7D8EA8", "#A8B6CC"],
         );
         addTier(
           innerRx + 10,
           innerRy + 10,
           innerRx + 55,
           innerRy + 55,
-          "#A10000",
-          "#6b0000",
+          ["#D23C3C", "#B22D2D", "#3C86D2", "#2A6CB2", "#D9D9D9"],
         );
       }
       generateSeats();
+      for (const s of seats) {
+        if (!seatsByColor[s.color]) seatsByColor[s.color] = [];
+        seatsByColor[s.color].push(s);
+      }
 
-      function drawStadium(c) {
-        c.fillStyle = "#1a1209";
+      function drawStadiumBase(c) {
+        const bg = c.createRadialGradient(CX, CY, FIELD_HW * 0.7, CX, CY, FIELD_HW + 260);
+        bg.addColorStop(0, "#223043");
+        bg.addColorStop(1, "#0d1522");
+        c.fillStyle = bg;
         c.fillRect(0, 0, W, H);
+
         c.beginPath();
         c.ellipse(CX, CY, FIELD_HW + 200, FIELD_HH + 200, 0, 0, Math.PI * 2);
-        c.fillStyle = "#0a0a0a";
+        c.fillStyle = "#3a4658";
         c.fill();
         c.beginPath();
         c.ellipse(CX, CY, FIELD_HW + 180, FIELD_HH + 180, 0, 0, Math.PI * 2);
-        c.fillStyle = "#001a3a";
+        c.fillStyle = "#2e3d52";
         c.fill();
         c.beginPath();
         c.ellipse(CX, CY, FIELD_HW + 65, FIELD_HH + 65, 0, 0, Math.PI * 2);
-        c.fillStyle = "#6b0000";
+        c.fillStyle = "#7b8798";
         c.fill();
-        const seatsByColor = {};
-        for (const s of seats) {
-          if (!seatsByColor[s.color]) seatsByColor[s.color] = [];
-          seatsByColor[s.color].push(s);
-        }
+
+        c.beginPath();
+        c.ellipse(CX, CY, FIELD_HW + 120, FIELD_HH + 120, 0, 0, Math.PI * 2);
+        c.strokeStyle = "rgba(255,255,255,0.12)";
+        c.lineWidth = 8;
+        c.stroke();
+
         for (const [color, group] of Object.entries(seatsByColor)) {
           c.fillStyle = color;
-          for (const s of group) c.fillRect(s.x - 1.5, s.y - 1.5, 3, 3);
+          for (const s of group) c.fillRect(s.x - 1.7, s.y - 1.7, 3.4, 3.4);
         }
         c.beginPath();
         c.ellipse(CX, CY, FIELD_HW + 35, FIELD_HH + 35, 0, 0, Math.PI * 2);
@@ -1517,6 +1740,21 @@
           c.lineWidth = 0.5;
           c.stroke();
         }
+      }
+
+      function ensureStadiumLayer() {
+        if (stadiumLayerReady || !stadiumLayerCtx) return;
+        drawStadiumBase(stadiumLayerCtx);
+        stadiumLayerReady = true;
+      }
+
+      function drawStadium(c) {
+        ensureStadiumLayer();
+        if (stadiumLayerReady) {
+          c.drawImage(stadiumLayerCanvas, 0, 0);
+          return;
+        }
+        drawStadiumBase(c);
       }
 
       function drawField(c) {

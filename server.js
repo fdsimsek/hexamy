@@ -6,11 +6,33 @@ const path = require("node:path");
 
 const app = express();
 const server = http.createServer(app);
-const wss = new WebSocketServer({ server });
+const MAX_WS_PAYLOAD_BYTES = Number(process.env.MAX_WS_PAYLOAD_BYTES || 16 * 1024);
+const MAX_CONNECTIONS = Number(process.env.MAX_CONNECTIONS || 64);
+const MAX_BUFFERED_AMOUNT_BYTES = Number(
+  process.env.MAX_BUFFERED_AMOUNT_BYTES || 512 * 1024,
+);
+const PING_INTERVAL_MS = Number(process.env.PING_INTERVAL_MS || 1000);
+const PONG_TIMEOUT_MS = Number(process.env.PONG_TIMEOUT_MS || 6000);
+const RATE_WINDOW_MS = Number(process.env.RATE_WINDOW_MS || 1000);
+const RATE_LIMIT_PER_WINDOW = {
+  input: Number(process.env.RATE_LIMIT_INPUT || 120),
+  chat: Number(process.env.RATE_LIMIT_CHAT || 10),
+  team: Number(process.env.RATE_LIMIT_TEAM || 8),
+  join: Number(process.env.RATE_LIMIT_JOIN || 5),
+  settings: Number(process.env.RATE_LIMIT_SETTINGS || 30),
+  resetSettings: Number(process.env.RATE_LIMIT_RESET_SETTINGS || 6),
+  start: Number(process.env.RATE_LIMIT_START || 6),
+  restart: Number(process.env.RATE_LIMIT_RESTART || 6),
+  default: Number(process.env.RATE_LIMIT_DEFAULT || 40),
+};
+const wss = new WebSocketServer({
+  server,
+  maxPayload: MAX_WS_PAYLOAD_BYTES,
+});
 
 app.use(express.static(path.join(__dirname, "public")));
 
-const PORT = 3000;
+const PORT = Number(process.env.PORT || 3000);
 
 // ============ GAME CONSTANTS (from .hbs map) ============
 
@@ -182,7 +204,7 @@ function handlePlayerInput(client) {
     ay *= 0.7071;
   }
 
-  const isKicking = keys.kick;
+  const isKicking = keys.shoot || keys.pass || keys.throughPass || keys.kick;
   p.kicking = isKicking;
   const accel = isKicking ? gameSettings.playerKickAccel : gameSettings.playerAccel;
   let damp = isKicking ? gameSettings.playerKickDamping : gameSettings.playerDamping;
@@ -244,19 +266,59 @@ function circleCollision(a, b) {
   }
 }
 
-function kickBall(player) {
+function kickBall(player, powerScale = 1, dirOverride = null) {
   const dx = ball.x - player.x,
     dy = ball.y - player.y;
   const dist = Math.hypot(dx, dy);
   const kickRange = PLAYER_R + BALL_R + gameSettings.kickRangeBonus;
   if (dist < kickRange && dist > 0.001) {
-    const nx = dx / dist,
-      ny = dy / dist;
-    ball.vx += nx * gameSettings.kickStrength;
-    ball.vy += ny * gameSettings.kickStrength;
+    const nx = dx / dist;
+    const ny = dy / dist;
+    const dirX = dirOverride?.x ?? nx;
+    const dirY = dirOverride?.y ?? ny;
+    const dirLen = Math.hypot(dirX, dirY);
+    const fx = dirLen > 0.0001 ? dirX / dirLen : nx;
+    const fy = dirLen > 0.0001 ? dirY / dirLen : ny;
+    ball.vx += fx * gameSettings.kickStrength * powerScale;
+    ball.vy += fy * gameSettings.kickStrength * powerScale;
     return true;
   }
   return false;
+}
+
+function findTeammateTarget(client, teamPlayers, leadFrames = 0) {
+  const teammates = (teamPlayers[client.team] || []).filter(
+    ({ client: teammate }) => teammate.id !== client.id,
+  );
+  if (teammates.length === 0) return null;
+
+  let best = null;
+  let bestDist = Infinity;
+  for (const { player } of teammates) {
+    const tx = player.x + player.vx * leadFrames;
+    const ty = player.y + player.vy * leadFrames;
+    const dx = tx - ball.x;
+    const dy = ty - ball.y;
+    const d = Math.hypot(dx, dy);
+    if (d < bestDist) {
+      bestDist = d;
+      best = { x: dx, y: dy };
+    }
+  }
+  return best;
+}
+
+function performBallAction(client, teamPlayers, actionType) {
+  const action = actionType === "kick" ? "shoot" : actionType;
+  if (action === "pass") {
+    const passDir = findTeammateTarget(client, teamPlayers, 0);
+    return kickBall(client.player, 0.56, passDir);
+  }
+  if (action === "throughPass") {
+    const throughDir = findTeammateTarget(client, teamPlayers, 10);
+    return kickBall(client.player, 0.74, throughDir);
+  }
+  return kickBall(client.player, 1);
 }
 
 function clampAxis(obj, pos, limit, prop, velProp, sign) {
@@ -358,14 +420,29 @@ function handleGoalCelebration() {
 }
 
 function processKicks(activePlayers) {
+  const teamPlayers = { red: [], blue: [] };
+  for (const entry of activePlayers) {
+    if (entry.client.team === "red" || entry.client.team === "blue") {
+      teamPlayers[entry.client.team].push(entry);
+    }
+  }
   for (const { client } of activePlayers) {
     if (kickoffPending && client.team !== kickoffTeam) {
       if (client.kickCooldown > 0) client.kickCooldown--;
       continue;
     }
-    if (client.keys?.kick && client.kickCooldown <= 0) {
-      if (kickBall(client.player)) {
-        client.kickCooldown = 8;
+    if (client.kickCooldown <= 0) {
+      const actionType = client.keys?.shoot
+        ? "shoot"
+        : client.keys?.throughPass
+          ? "throughPass"
+          : client.keys?.pass
+            ? "pass"
+            : client.keys?.kick
+              ? "kick"
+              : null;
+      if (actionType && performBallAction(client, teamPlayers, actionType)) {
+        client.kickCooldown = actionType === "pass" ? 6 : actionType === "throughPass" ? 7 : 8;
         if (kickoffPending && client.team === kickoffTeam) kickoffPending = false;
       }
     }
@@ -503,8 +580,18 @@ function broadcastState() {
 
 function broadcast(msg) {
   const data = JSON.stringify(msg);
-  for (const [ws] of clients) {
-    if (ws.readyState === 1) ws.send(data);
+  for (const [ws, client] of clients) {
+    if (ws.readyState !== 1) continue;
+    if (ws.bufferedAmount > MAX_BUFFERED_AMOUNT_BYTES) {
+      ws.terminate();
+      continue;
+    }
+    try {
+      ws.send(data);
+    } catch {
+      if (client) clients.delete(ws);
+      ws.terminate();
+    }
   }
 }
 
@@ -625,6 +712,9 @@ function handleInput(client, msg) {
     down: !!msg.keys.down,
     left: !!msg.keys.left,
     right: !!msg.keys.right,
+    pass: !!msg.keys.pass,
+    throughPass: !!msg.keys.throughPass,
+    shoot: !!msg.keys.shoot,
     kick: !!msg.keys.kick,
   };
 }
@@ -669,6 +759,8 @@ const messageHandlers = {
 };
 
 function handleClientMessage(client, msg) {
+  if (!msg || typeof msg !== "object" || typeof msg.type !== "string") return;
+  if (isRateLimited(client, msg.type)) return;
   const handler = messageHandlers[msg.type];
   if (handler) handler(client, msg);
 }
@@ -676,23 +768,57 @@ function handleClientMessage(client, msg) {
 function startPingLoop() {
   if (pingInterval) return;
   pingInterval = setInterval(() => {
+    const now = Date.now();
     const ts = Date.now().toString();
-    for (const [ws] of clients) {
+    for (const [ws, client] of clients) {
+      if (now - client.lastPongAt > PONG_TIMEOUT_MS) {
+        ws.terminate();
+        continue;
+      }
       if (ws.readyState === 1) ws.ping(ts);
     }
-  }, 1000);
+  }, PING_INTERVAL_MS);
+}
+
+function isRateLimited(client, type) {
+  const now = Date.now();
+  if (!client.rateLimitWindowStart || now - client.rateLimitWindowStart >= RATE_WINDOW_MS) {
+    client.rateLimitWindowStart = now;
+    client.rateLimitCounts = {};
+  }
+  const key = typeof type === "string" ? type : "default";
+  const limit = RATE_LIMIT_PER_WINDOW[key] ?? RATE_LIMIT_PER_WINDOW.default;
+  const nextCount = (client.rateLimitCounts[key] || 0) + 1;
+  client.rateLimitCounts[key] = nextCount;
+  return nextCount > limit;
 }
 
 wss.on("connection", (ws) => {
+  if (clients.size >= MAX_CONNECTIONS) {
+    ws.close(1013, "Server busy");
+    return;
+  }
   const id = nextId++;
   const clientData = {
     id,
     name: "Oyuncu " + id,
     team: null,
-    keys: { up: false, down: false, left: false, right: false, kick: false },
+    keys: {
+      up: false,
+      down: false,
+      left: false,
+      right: false,
+      pass: false,
+      throughPass: false,
+      shoot: false,
+      kick: false,
+    },
     player: null,
     kickCooldown: 0,
     pingMs: null,
+    lastPongAt: Date.now(),
+    rateLimitWindowStart: Date.now(),
+    rateLimitCounts: {},
   };
   clients.set(ws, clientData);
   startPingLoop();
@@ -703,6 +829,13 @@ wss.on("connection", (ws) => {
   sendLobbyUpdate();
 
   ws.on("message", (raw) => {
+    const rawSize = Buffer.isBuffer(raw)
+      ? raw.length
+      : Buffer.byteLength(String(raw), "utf8");
+    if (rawSize > MAX_WS_PAYLOAD_BYTES) {
+      ws.close(1009, "Payload too large");
+      return;
+    }
     let msg;
     try {
       msg = JSON.parse(raw);
@@ -719,6 +852,7 @@ wss.on("connection", (ws) => {
     if (!client) return;
     const sentTs = Number(raw.toString());
     if (!Number.isFinite(sentTs)) return;
+    client.lastPongAt = Date.now();
     client.pingMs = Math.max(0, Math.round(Date.now() - sentTs));
   });
 
@@ -745,6 +879,32 @@ wss.on("connection", (ws) => {
     sendLobbyUpdate();
   });
 });
+
+let shuttingDown = false;
+function shutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`${signal} alindi, sunucu kapatiliyor...`);
+  stopGameLoop();
+  if (pingInterval) {
+    clearInterval(pingInterval);
+    pingInterval = null;
+  }
+  for (const [ws] of clients) {
+    try {
+      ws.close(1001, "Server shutting down");
+    } catch {
+      ws.terminate();
+    }
+  }
+  server.close(() => {
+    process.exit(0);
+  });
+  setTimeout(() => process.exit(1), 4000).unref();
+}
+
+process.on("SIGINT", () => shutdown("SIGINT"));
+process.on("SIGTERM", () => shutdown("SIGTERM"));
 
 // ============ START SERVER ============
 
