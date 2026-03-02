@@ -13,15 +13,15 @@ const MAX_BUFFERED_AMOUNT_BYTES = Number(
 );
 const STATE_BROADCAST_HZ = Number(process.env.STATE_BROADCAST_HZ || 30);
 const STATE_BROADCAST_MS = Math.max(12, 1000 / Math.max(10, STATE_BROADCAST_HZ));
-const PING_INTERVAL_MS = Number(process.env.PING_INTERVAL_MS || 500);
-const PING_SCAN_INTERVAL_MS = Number(process.env.PING_SCAN_INTERVAL_MS || 100);
-const PING_JITTER_MS = Number(process.env.PING_JITTER_MS || 140);
+const PING_INTERVAL_MS = Number(process.env.PING_INTERVAL_MS || 200);
+const PING_SCAN_INTERVAL_MS = Number(process.env.PING_SCAN_INTERVAL_MS || 50);
+const PING_JITTER_MS = Number(process.env.PING_JITTER_MS || 10);
 const PONG_TIMEOUT_MS = Number(process.env.PONG_TIMEOUT_MS || 6000);
-const PING_SMOOTHING_ALPHA = Number(process.env.PING_SMOOTHING_ALPHA || 0.25);
-const PING_SPIKE_CAP_MULTIPLIER = Number(process.env.PING_SPIKE_CAP_MULTIPLIER || 1.5);
-const PING_BASELINE_DECAY = Number(process.env.PING_BASELINE_DECAY || 0.08);
+const PING_SMOOTHING_ALPHA = Number(process.env.PING_SMOOTHING_ALPHA || 0.5);
+const PING_SPIKE_CAP_MULTIPLIER = Number(process.env.PING_SPIKE_CAP_MULTIPLIER || 3.0);
+const PING_BASELINE_DECAY = Number(process.env.PING_BASELINE_DECAY || 0.15);
 const PING_DISPLAY_FLOOR_MS = Number(process.env.PING_DISPLAY_FLOOR_MS || 0);
-const PING_MIN_GAP_MS = Number(process.env.PING_MIN_GAP_MS || 350);
+const PING_MIN_GAP_MS = Number(process.env.PING_MIN_GAP_MS || 150);
 const RATE_WINDOW_MS = Number(process.env.RATE_WINDOW_MS || 1000);
 const RATE_LIMIT_PER_WINDOW = {
   input: Number(process.env.RATE_LIMIT_INPUT || 120),
@@ -117,8 +117,7 @@ let scoreBlue = 0;
 let gameTime = 0;
 let goalScoredState = null;
 let goalScoredTimer = 0;
-let gameLoopInterval = null;
-let broadcastInterval = null;
+let gameLoopTimeout = null;
 let pingInterval = null;
 let gameSettings = { ...DEFAULT_GAME_SETTINGS };
 let kickoffPending = false;
@@ -142,14 +141,22 @@ function sanitizeSettings(rawSettings) {
   return next;
 }
 
+const _activePlayersPool = [];
+
 function getPlayersArray() {
-  const players = [];
+  let len = 0;
   for (const [, client] of clients) {
     if (client.team && client.player) {
-      players.push({ client, player: client.player });
+      if (len >= _activePlayersPool.length) {
+        _activePlayersPool.push({ client: null, player: null });
+      }
+      _activePlayersPool[len].client = client;
+      _activePlayersPool[len].player = client.player;
+      len++;
     }
   }
-  return players;
+  _activePlayersPool.length = len;
+  return _activePlayersPool;
 }
 
 function resetPositions() {
@@ -548,43 +555,61 @@ function gameUpdate() {
   checkGoalScored();
 }
 
+const _bcastPlayersPool = [];
+const _bcastBall = { x: 0, y: 0, vx: 0, vy: 0, r: 0 };
+const _bcastMsg = {
+  type: "state",
+  players: _bcastPlayersPool,
+  ball: _bcastBall,
+  scoreRed: 0,
+  scoreBlue: 0,
+  time: 0,
+  goalScoredState: null,
+  kickoffPending: false,
+  kickoffTeam: "",
+};
+
 function broadcastState() {
   if (gameState !== "playing") return;
 
-  const playersState = [];
+  let len = 0;
   for (const [, c] of clients) {
     if (c.team && c.player) {
-      playersState.push({
-        id: c.id,
-        name: c.name,
-        team: c.team,
-        x: Math.round(c.player.x * 10) / 10,
-        y: Math.round(c.player.y * 10) / 10,
-        r: c.player.r,
-        kicking: c.player.kicking || false,
-        ping: c.pingMs ?? null,
-        pingRaw: Number.isFinite(c.pingRawMs) ? Math.round(c.pingRawMs) : null,
-      });
+      if (len >= _bcastPlayersPool.length) {
+        _bcastPlayersPool.push({
+          id: 0, name: "", team: "", x: 0, y: 0, r: 0,
+          kicking: false, ping: null, pingRaw: null,
+        });
+      }
+      const entry = _bcastPlayersPool[len];
+      entry.id = c.id;
+      entry.name = c.name;
+      entry.team = c.team;
+      entry.x = Math.round(c.player.x * 10) / 10;
+      entry.y = Math.round(c.player.y * 10) / 10;
+      entry.r = c.player.r;
+      entry.kicking = c.player.kicking || false;
+      entry.ping = c.pingMs ?? null;
+      entry.pingRaw = Number.isFinite(c.pingRawMs) ? Math.round(c.pingRawMs) : null;
+      len++;
     }
   }
+  _bcastPlayersPool.length = len;
 
-  broadcast({
-    type: "state",
-    players: playersState,
-    ball: {
-      x: Math.round(ball.x * 10) / 10,
-      y: Math.round(ball.y * 10) / 10,
-      vx: Math.round(ball.vx * 100) / 100,
-      vy: Math.round(ball.vy * 100) / 100,
-      r: ball.r,
-    },
-    scoreRed,
-    scoreBlue,
-    time: gameTime,
-    goalScoredState,
-    kickoffPending,
-    kickoffTeam,
-  });
+  _bcastBall.x = Math.round(ball.x * 10) / 10;
+  _bcastBall.y = Math.round(ball.y * 10) / 10;
+  _bcastBall.vx = Math.round(ball.vx * 100) / 100;
+  _bcastBall.vy = Math.round(ball.vy * 100) / 100;
+  _bcastBall.r = ball.r;
+
+  _bcastMsg.scoreRed = scoreRed;
+  _bcastMsg.scoreBlue = scoreBlue;
+  _bcastMsg.time = gameTime;
+  _bcastMsg.goalScoredState = goalScoredState;
+  _bcastMsg.kickoffPending = kickoffPending;
+  _bcastMsg.kickoffTeam = kickoffTeam;
+
+  broadcast(_bcastMsg);
 }
 
 // ============ LOBBY & NETWORKING ============
@@ -620,6 +645,10 @@ function sendLobbyUpdate() {
   });
 }
 
+const TICK_MS = 1000 / 60;
+const BROADCAST_EVERY_N_TICKS = Math.max(1, Math.round(STATE_BROADCAST_MS / TICK_MS));
+const MAX_CATCHUP_STEPS = 4;
+
 function startGameLoop() {
   gameState = "playing";
   scoreRed = 0;
@@ -651,20 +680,46 @@ function startGameLoop() {
   resetPositions();
   broadcast({ type: "gameStart" });
 
-  if (gameLoopInterval) clearInterval(gameLoopInterval);
-  if (broadcastInterval) clearInterval(broadcastInterval);
-  gameLoopInterval = setInterval(gameUpdate, 1000 / 60);
-  broadcastInterval = setInterval(broadcastState, STATE_BROADCAST_MS);
+  stopGameLoop();
+
+  let lastHrNs = process.hrtime.bigint();
+  let accumulator = 0;
+  let tickCount = 0;
+
+  function tick() {
+    const nowNs = process.hrtime.bigint();
+    const elapsedMs = Number(nowNs - lastHrNs) / 1e6;
+    lastHrNs = nowNs;
+    accumulator += elapsedMs;
+
+    let steps = 0;
+    while (accumulator >= TICK_MS && steps < MAX_CATCHUP_STEPS) {
+      gameUpdate();
+      accumulator -= TICK_MS;
+      tickCount++;
+      steps++;
+      if (tickCount % BROADCAST_EVERY_N_TICKS === 0) {
+        broadcastState();
+      }
+    }
+
+    if (accumulator > TICK_MS * MAX_CATCHUP_STEPS) {
+      accumulator = 0;
+    }
+
+    if (gameState === "playing") {
+      const nextIn = Math.max(1, TICK_MS - accumulator);
+      gameLoopTimeout = setTimeout(tick, nextIn);
+    }
+  }
+
+  gameLoopTimeout = setTimeout(tick, TICK_MS);
 }
 
 function stopGameLoop() {
-  if (gameLoopInterval) {
-    clearInterval(gameLoopInterval);
-    gameLoopInterval = null;
-  }
-  if (broadcastInterval) {
-    clearInterval(broadcastInterval);
-    broadcastInterval = null;
+  if (gameLoopTimeout) {
+    clearTimeout(gameLoopTimeout);
+    gameLoopTimeout = null;
   }
 }
 

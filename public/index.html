@@ -1986,6 +1986,10 @@
         netStatsEl.replaceChildren(...rows);
       }
 
+      const _lerpBall = { x: CX, y: CY, vx: 0, vy: 0, r: BALL_R };
+      const _lerpPrevById = new Map();
+      let _lerpPlayers = [];
+
       function lerpState(now) {
         if (!currState) return;
         if (!prevState) {
@@ -1995,27 +1999,59 @@
         }
 
         const elapsed = now - stateTimestamp;
-        const t = Math.min(Math.max(elapsed / serverTickMs, 0), 1.2);
+        const t = Math.min(Math.max(elapsed / serverTickMs, 0), 2.0);
 
-        gameBall = {
-          x: prevState.ball.x + (currState.ball.x - prevState.ball.x) * t,
-          y: prevState.ball.y + (currState.ball.y - prevState.ball.y) * t,
-          vx: currState.ball.vx,
-          vy: currState.ball.vy,
-          r: currState.ball.r,
-        };
+        if (t <= 1.0) {
+          _lerpBall.x = prevState.ball.x + (currState.ball.x - prevState.ball.x) * t;
+          _lerpBall.y = prevState.ball.y + (currState.ball.y - prevState.ball.y) * t;
+        } else {
+          const extraFrames = (t - 1.0) * serverTickMs / (1000 / 60);
+          _lerpBall.x = currState.ball.x + currState.ball.vx * extraFrames;
+          _lerpBall.y = currState.ball.y + currState.ball.vy * extraFrames;
+        }
+        _lerpBall.vx = currState.ball.vx;
+        _lerpBall.vy = currState.ball.vy;
+        _lerpBall.r = currState.ball.r;
+        gameBall = _lerpBall;
 
-        const prevPlayersById = new Map();
-        for (const p of prevState.players) prevPlayersById.set(p.id, p);
-        gamePlayers = currState.players.map((cp) => {
-          const pp = prevPlayersById.get(cp.id);
-          if (!pp) return cp;
-          return {
-            ...cp,
-            x: pp.x + (cp.x - pp.x) * t,
-            y: pp.y + (cp.y - pp.y) * t,
-          };
-        });
+        _lerpPrevById.clear();
+        for (const p of prevState.players) _lerpPrevById.set(p.id, p);
+
+        while (_lerpPlayers.length < currState.players.length) {
+          _lerpPlayers.push({
+            id: 0, name: "", team: "", x: 0, y: 0,
+            r: 0, kicking: false, ping: null, pingRaw: null,
+          });
+        }
+        _lerpPlayers.length = currState.players.length;
+
+        for (let i = 0; i < currState.players.length; i++) {
+          const cp = currState.players[i];
+          const pp = _lerpPrevById.get(cp.id);
+          const out = _lerpPlayers[i];
+          out.id = cp.id;
+          out.name = cp.name;
+          out.team = cp.team;
+          out.r = cp.r;
+          out.kicking = cp.kicking;
+          out.ping = cp.ping;
+          out.pingRaw = cp.pingRaw;
+
+          if (!pp) {
+            out.x = cp.x;
+            out.y = cp.y;
+          } else if (t <= 1.0) {
+            out.x = pp.x + (cp.x - pp.x) * t;
+            out.y = pp.y + (cp.y - pp.y) * t;
+          } else {
+            const dvx = cp.x - pp.x;
+            const dvy = cp.y - pp.y;
+            out.x = cp.x + dvx * (t - 1.0);
+            out.y = cp.y + dvy * (t - 1.0);
+          }
+        }
+
+        gamePlayers = _lerpPlayers;
       }
 
       function onGoal(msg) {
