@@ -13,6 +13,8 @@ const MAX_BUFFERED_AMOUNT_BYTES = Number(
 );
 const PING_INTERVAL_MS = Number(process.env.PING_INTERVAL_MS || 1000);
 const PONG_TIMEOUT_MS = Number(process.env.PONG_TIMEOUT_MS || 6000);
+const PING_SMOOTHING_ALPHA = Number(process.env.PING_SMOOTHING_ALPHA || 0.35);
+const PING_SPIKE_CAP_MULTIPLIER = Number(process.env.PING_SPIKE_CAP_MULTIPLIER || 1.8);
 const RATE_WINDOW_MS = Number(process.env.RATE_WINDOW_MS || 1000);
 const RATE_LIMIT_PER_WINDOW = {
   input: Number(process.env.RATE_LIMIT_INPUT || 120),
@@ -769,13 +771,19 @@ function startPingLoop() {
   if (pingInterval) return;
   pingInterval = setInterval(() => {
     const now = Date.now();
-    const ts = Date.now().toString();
     for (const [ws, client] of clients) {
-      if (now - client.lastPongAt > PONG_TIMEOUT_MS) {
+      if (
+        (client.awaitingPong && now - client.lastPingSentAt > PONG_TIMEOUT_MS) ||
+        now - client.lastPongAt > PONG_TIMEOUT_MS
+      ) {
         ws.terminate();
         continue;
       }
-      if (ws.readyState === 1) ws.ping(ts);
+      if (ws.readyState === 1 && !client.awaitingPong) {
+        client.awaitingPong = true;
+        client.lastPingSentAt = now;
+        ws.ping();
+      }
     }
   }, PING_INTERVAL_MS);
 }
@@ -816,10 +824,17 @@ wss.on("connection", (ws) => {
     player: null,
     kickCooldown: 0,
     pingMs: null,
+    pingRawMs: null,
     lastPongAt: Date.now(),
+    lastPingSentAt: 0,
+    awaitingPong: false,
     rateLimitWindowStart: Date.now(),
     rateLimitCounts: {},
   };
+  if (ws._socket) {
+    ws._socket.setNoDelay(true);
+    ws._socket.setKeepAlive(true, 2000);
+  }
   clients.set(ws, clientData);
   startPingLoop();
 
@@ -847,13 +862,23 @@ wss.on("connection", (ws) => {
     handleClientMessage(client, msg);
   });
 
-  ws.on("pong", (raw) => {
+  ws.on("pong", () => {
     const client = clients.get(ws);
     if (!client) return;
-    const sentTs = Number(raw.toString());
-    if (!Number.isFinite(sentTs)) return;
-    client.lastPongAt = Date.now();
-    client.pingMs = Math.max(0, Math.round(Date.now() - sentTs));
+    const now = Date.now();
+    client.lastPongAt = now;
+    if (!client.awaitingPong) return;
+    client.awaitingPong = false;
+
+    const rawPing = Math.max(0, Math.round(now - client.lastPingSentAt));
+    client.pingRawMs = rawPing;
+    if (!Number.isFinite(client.pingMs)) {
+      client.pingMs = rawPing;
+      return;
+    }
+    const cappedRaw = Math.min(rawPing, Math.round(client.pingMs * PING_SPIKE_CAP_MULTIPLIER));
+    const smooth = client.pingMs + (cappedRaw - client.pingMs) * PING_SMOOTHING_ALPHA;
+    client.pingMs = Math.max(0, Math.round(smooth));
   });
 
   ws.on("close", () => {
