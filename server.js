@@ -1,8 +1,8 @@
 const express = require('express');
-const http = require('http');
+const http = require('node:http');
 const { WebSocketServer } = require('ws');
-const os = require('os');
-const path = require('path');
+const os = require('node:os');
+const path = require('node:path');
 
 const app = express();
 const server = http.createServer(app);
@@ -139,7 +139,7 @@ function handlePlayerInput(client) {
 
 function circleCollision(a, b) {
   const dx = b.x - a.x, dy = b.y - a.y;
-  const dist = Math.sqrt(dx * dx + dy * dy);
+  const dist = Math.hypot(dx, dy);
   const minDist = a.r + b.r;
   if (dist < minDist && dist > 0.001) {
     const nx = dx / dist, ny = dy / dist;
@@ -167,7 +167,7 @@ function circleCollision(a, b) {
 
 function kickBall(player) {
   const dx = ball.x - player.x, dy = ball.y - player.y;
-  const dist = Math.sqrt(dx * dx + dy * dy);
+  const dist = Math.hypot(dx, dy);
   if (dist < KICK_RANGE && dist > 0.001) {
     const nx = dx / dist, ny = dy / dist;
     ball.vx += nx * KICK_STRENGTH;
@@ -177,44 +177,50 @@ function kickBall(player) {
   return false;
 }
 
+function clampAxis(obj, pos, limit, prop, velProp, sign) {
+  obj[prop] = limit + sign * obj.r;
+  obj[velProp] = sign * Math.abs(obj[velProp]) * 0.5;
+}
+
+function constrainGoalZone(obj, xMin, xMax, yMin, yMax) {
+  if (obj.x - obj.r < xMin) clampAxis(obj, obj.x, xMin, 'x', 'vx', 1);
+  if (obj.x + obj.r > xMax) clampAxis(obj, obj.x, xMax, 'x', 'vx', -1);
+  if (obj.y - obj.r < yMin) clampAxis(obj, obj.y, yMin, 'y', 'vy', 1);
+  if (obj.y + obj.r > yMax) clampAxis(obj, obj.y, yMax, 'y', 'vy', -1);
+}
+
+function constrainPostCollision(obj, post) {
+  const dx = obj.x - post.x, dy = obj.y - post.y;
+  const dist = Math.hypot(dx, dy);
+  const minD = obj.r + post.r;
+  if (dist >= minD || dist <= 0.001) return;
+  const nx = dx / dist, ny = dy / dist;
+  obj.x = post.x + nx * minD;
+  obj.y = post.y + ny * minD;
+  const dot = obj.vx * nx + obj.vy * ny;
+  if (dot < 0) {
+    obj.vx -= 1.5 * dot * nx;
+    obj.vy -= 1.5 * dot * ny;
+  }
+}
+
 function constrainObj(obj) {
-  const r = obj.r;
-  const insideLeftGoalX = obj.x - r < FIELD_X1;
-  const insideRightGoalX = obj.x + r > FIELD_X2;
+  const pastLeftX = obj.x - obj.r < FIELD_X1;
+  const pastRightX = obj.x + obj.r > FIELD_X2;
+  const inGoalY = obj.y + obj.r > GOAL_Y1 && obj.y - obj.r < GOAL_Y2;
 
-  if (insideLeftGoalX) {
-    if (obj.x - r < FIELD_X1 - GOAL_DEPTH) { obj.x = FIELD_X1 - GOAL_DEPTH + r; obj.vx = Math.abs(obj.vx) * 0.5; }
-    if (obj.y - r < GOAL_Y1) { obj.y = GOAL_Y1 + r; obj.vy = Math.abs(obj.vy) * 0.5; }
-    if (obj.y + r > GOAL_Y2) { obj.y = GOAL_Y2 - r; obj.vy = -Math.abs(obj.vy) * 0.5; }
-  } else if (insideRightGoalX) {
-    if (obj.x + r > FIELD_X2 + GOAL_DEPTH) { obj.x = FIELD_X2 + GOAL_DEPTH - r; obj.vx = -Math.abs(obj.vx) * 0.5; }
-    if (obj.y - r < GOAL_Y1) { obj.y = GOAL_Y1 + r; obj.vy = Math.abs(obj.vy) * 0.5; }
-    if (obj.y + r > GOAL_Y2) { obj.y = GOAL_Y2 - r; obj.vy = -Math.abs(obj.vy) * 0.5; }
+  const inLeftGoal = pastLeftX && inGoalY;
+  const inRightGoal = pastRightX && inGoalY;
+
+  if (inLeftGoal) {
+    constrainGoalZone(obj, FIELD_X1 - GOAL_DEPTH, Infinity, GOAL_Y1, GOAL_Y2);
+  } else if (inRightGoal) {
+    constrainGoalZone(obj, -Infinity, FIELD_X2 + GOAL_DEPTH, GOAL_Y1, GOAL_Y2);
   } else {
-    if (obj.y - r < FIELD_Y1) { obj.y = FIELD_Y1 + r; obj.vy = Math.abs(obj.vy) * 0.5; }
-    if (obj.y + r > FIELD_Y2) { obj.y = FIELD_Y2 - r; obj.vy = -Math.abs(obj.vy) * 0.5; }
+    constrainGoalZone(obj, FIELD_X1, FIELD_X2, FIELD_Y1, FIELD_Y2);
   }
 
-  if (!insideLeftGoalX && !insideRightGoalX) {
-    if (obj.x - r < FIELD_X1) { obj.x = FIELD_X1 + r; obj.vx = Math.abs(obj.vx) * 0.5; }
-    if (obj.x + r > FIELD_X2) { obj.x = FIELD_X2 - r; obj.vx = -Math.abs(obj.vx) * 0.5; }
-  }
-
-  for (const post of goalPosts) {
-    const dx = obj.x - post.x, dy = obj.y - post.y;
-    const dist = Math.sqrt(dx * dx + dy * dy);
-    const minD = obj.r + post.r;
-    if (dist < minD && dist > 0.001) {
-      const nx = dx / dist, ny = dy / dist;
-      obj.x = post.x + nx * minD;
-      obj.y = post.y + ny * minD;
-      const dot = obj.vx * nx + obj.vy * ny;
-      if (dot < 0) {
-        obj.vx -= 1.5 * dot * nx;
-        obj.vy -= 1.5 * dot * ny;
-      }
-    }
-  }
+  for (const post of goalPosts) constrainPostCollision(obj, post);
 }
 
 function isGoal() {
@@ -223,75 +229,77 @@ function isGoal() {
   return null;
 }
 
-function gameUpdate() {
-  if (gameState !== 'playing') return;
+function handleGoalCelebration() {
+  goalScoredTimer--;
+  if (goalScoredTimer > 0) return false;
 
-  if (goalScoredState) {
-    goalScoredTimer--;
-    if (goalScoredTimer <= 0) {
-      if (scoreRed >= WIN_SCORE) {
-        gameState = 'ended';
-        broadcast({ type: 'winner', team: 'red', scoreRed, scoreBlue, time: gameTime });
-        return;
-      }
-      if (scoreBlue >= WIN_SCORE) {
-        gameState = 'ended';
-        broadcast({ type: 'winner', team: 'blue', scoreRed, scoreBlue, time: gameTime });
-        return;
-      }
-      goalScoredState = null;
-      resetPositions();
-    }
+  let winner = null;
+  if (scoreRed >= WIN_SCORE) winner = 'red';
+  else if (scoreBlue >= WIN_SCORE) winner = 'blue';
+  if (winner) {
+    gameState = 'ended';
+    broadcast({ type: 'winner', team: winner, scoreRed, scoreBlue, time: gameTime });
+    return true;
   }
+  goalScoredState = null;
+  resetPositions();
+  return false;
+}
 
-  gameTime += 1 / 60;
-
-  const activePlayers = getPlayersArray();
-
+function processKicks(activePlayers) {
   for (const { client } of activePlayers) {
-    handlePlayerInput(client);
-  }
-
-  for (const { client } of activePlayers) {
-    if (client.keys && client.keys.kick && client.kickCooldown <= 0) {
+    if (client.keys?.kick && client.kickCooldown <= 0) {
       if (kickBall(client.player)) client.kickCooldown = 8;
     }
     if (client.kickCooldown > 0) client.kickCooldown--;
   }
+}
 
-  ball.vx *= BALL_DAMPING;
-  ball.vy *= BALL_DAMPING;
-
+function applyMovement(activePlayers) {
   for (const { player } of activePlayers) {
     player.x += player.vx;
     player.y += player.vy;
   }
+  ball.vx *= BALL_DAMPING;
+  ball.vy *= BALL_DAMPING;
   ball.x += ball.vx;
   ball.y += ball.vy;
+}
 
-  for (const { player } of activePlayers) {
-    circleCollision(player, ball);
-  }
+function resolveCollisions(activePlayers) {
+  for (const { player } of activePlayers) circleCollision(player, ball);
   for (let i = 0; i < activePlayers.length; i++) {
     for (let j = i + 1; j < activePlayers.length; j++) {
       circleCollision(activePlayers[i].player, activePlayers[j].player);
     }
   }
-
-  for (const { player } of activePlayers) {
-    constrainObj(player);
-  }
+  for (const { player } of activePlayers) constrainObj(player);
   constrainObj(ball);
+}
 
-  const goal = goalScoredState ? null : isGoal();
-  if (goal) {
-    if (goal === 'red') scoreRed++;
-    else scoreBlue++;
-    goalScoredState = goal;
-    goalScoredTimer = GOAL_CELEBRATION_FRAMES;
-    broadcast({ type: 'goal', team: goal, scoreRed, scoreBlue });
-  }
+function checkGoalScored() {
+  if (goalScoredState) return;
+  const goal = isGoal();
+  if (!goal) return;
+  if (goal === 'red') scoreRed++;
+  else scoreBlue++;
+  goalScoredState = goal;
+  goalScoredTimer = GOAL_CELEBRATION_FRAMES;
+  broadcast({ type: 'goal', team: goal, scoreRed, scoreBlue });
+}
 
+function gameUpdate() {
+  if (gameState !== 'playing') return;
+  if (goalScoredState && handleGoalCelebration()) return;
+
+  gameTime += 1 / 60;
+  const activePlayers = getPlayersArray();
+
+  for (const { client } of activePlayers) handlePlayerInput(client);
+  processKicks(activePlayers);
+  applyMovement(activePlayers);
+  resolveCollisions(activePlayers);
+  checkGoalScored();
 }
 
 function broadcastState() {
@@ -386,6 +394,61 @@ function stopGameLoop() {
   }
 }
 
+function isLobbyOrEnded() {
+  return gameState === 'lobby' || gameState === 'ended';
+}
+
+function handleJoin(client, msg) {
+  client.name = (msg.name || 'Oyuncu').slice(0, 16);
+  sendLobbyUpdate();
+}
+
+function handleTeam(client, msg) {
+  if (!isLobbyOrEnded()) return;
+  const teamCount = [...clients.values()].filter(c => c.team === msg.team).length;
+  if (teamCount < 4) client.team = msg.team;
+  sendLobbyUpdate();
+}
+
+function handleStart(client) {
+  if (client.id !== hostId || !isLobbyOrEnded()) return;
+  const hasRed = [...clients.values()].some(c => c.team === 'red');
+  const hasBlue = [...clients.values()].some(c => c.team === 'blue');
+  if (hasRed && hasBlue) startGameLoop();
+}
+
+function handleRestart(client) {
+  if (client.id !== hostId) return;
+  stopGameLoop();
+  gameState = 'lobby';
+  for (const [, c] of clients) c.player = null;
+  sendLobbyUpdate();
+}
+
+function handleInput(client, msg) {
+  if (gameState !== 'playing' || !msg.keys) return;
+  client.keys = {
+    up: !!msg.keys.up,
+    down: !!msg.keys.down,
+    left: !!msg.keys.left,
+    right: !!msg.keys.right,
+    kick: !!msg.keys.kick,
+  };
+}
+
+const messageHandlers = {
+  join: handleJoin,
+  team: handleTeam,
+  start: handleStart,
+  restart: handleRestart,
+  input: handleInput,
+};
+
+function handleClientMessage(client, msg) {
+  const handler = messageHandlers[msg.type];
+  if (handler) handler(client, msg);
+}
+
 wss.on('connection', (ws) => {
   const id = nextId++;
   const clientData = {
@@ -408,56 +471,7 @@ wss.on('connection', (ws) => {
     try { msg = JSON.parse(raw); } catch { return; }
     const client = clients.get(ws);
     if (!client) return;
-
-    switch (msg.type) {
-      case 'join':
-        client.name = (msg.name || 'Oyuncu').slice(0, 16);
-        sendLobbyUpdate();
-        break;
-
-      case 'team':
-        if (gameState === 'lobby' || gameState === 'ended') {
-          const teamCount = [...clients.values()].filter(c => c.team === msg.team).length;
-          if (teamCount < 4) {
-            client.team = msg.team;
-          }
-          sendLobbyUpdate();
-        }
-        break;
-
-      case 'start':
-        if (client.id === hostId && (gameState === 'lobby' || gameState === 'ended')) {
-          const hasRed = [...clients.values()].some(c => c.team === 'red');
-          const hasBlue = [...clients.values()].some(c => c.team === 'blue');
-          if (hasRed && hasBlue) {
-            startGameLoop();
-          }
-        }
-        break;
-
-      case 'restart':
-        if (client.id === hostId) {
-          stopGameLoop();
-          gameState = 'lobby';
-          for (const [, c] of clients) {
-            c.player = null;
-          }
-          sendLobbyUpdate();
-        }
-        break;
-
-      case 'input':
-        if (gameState === 'playing' && msg.keys) {
-          client.keys = {
-            up: !!msg.keys.up,
-            down: !!msg.keys.down,
-            left: !!msg.keys.left,
-            right: !!msg.keys.right,
-            kick: !!msg.keys.kick,
-          };
-        }
-        break;
-    }
+    handleClientMessage(client, msg);
   });
 
   ws.on('close', () => {
