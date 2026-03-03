@@ -21,7 +21,7 @@ function waitFor(condition, timeoutMs = 8000) {
   });
 }
 
-test("server boots and websocket roundtrip works", async () => {
+test("server boots and lobby action flow returns actionResult", async () => {
   const port = 3400 + Math.floor(Math.random() * 200);
   const proc = spawn(process.execPath, ["server.js"], {
     cwd: ROOT,
@@ -41,6 +41,8 @@ test("server boots and websocket roundtrip works", async () => {
 
     const ws = new WebSocket(`ws://127.0.0.1:${port}`);
     let gotRoomList = false;
+    let gotCreateRoomResult = false;
+    let gotRoomJoined = false;
     await new Promise((resolve, reject) => {
       const timeoutId = setTimeout(() => reject(new Error("ws timeout")), 6000);
       ws.on("open", () => {
@@ -50,6 +52,15 @@ test("server boots and websocket roundtrip works", async () => {
         const msg = JSON.parse(String(buf));
         if (msg.type === "roomList") {
           gotRoomList = true;
+          ws.send(JSON.stringify({ type: "createRoom", roomName: "Smoke Room" }));
+        }
+        if (msg.type === "roomJoined") {
+          gotRoomJoined = true;
+        }
+        if (msg.type === "actionResult" && msg.action === "createRoom" && msg.ok) {
+          gotCreateRoomResult = true;
+        }
+        if (gotRoomList && gotRoomJoined && gotCreateRoomResult) {
           clearTimeout(timeoutId);
           ws.close();
           resolve();
@@ -58,6 +69,8 @@ test("server boots and websocket roundtrip works", async () => {
       ws.on("error", reject);
     });
     assert.equal(gotRoomList, true);
+    assert.equal(gotRoomJoined, true);
+    assert.equal(gotCreateRoomResult, true);
   } finally {
     proc.kill("SIGTERM");
   }

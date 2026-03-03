@@ -9,6 +9,8 @@
     "lint": "node --check server.js",
     "test": "node --test",
     "smoke": "node --test test/smoke.test.js",
+    "bench:lan": "node scripts/lan-jitter-bench.js",
+    "diagnose:lan": "node scripts/lan-live-diagnose.js",
     "check": "npm run lint && npm run test && npm run smoke"
   },
   "dependencies": {

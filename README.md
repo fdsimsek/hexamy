@@ -73,6 +73,7 @@ Sonra tekrar `npm start` calistir.
 - Health: `GET /healthz`
 - Readiness: `GET /readyz`
 - Metrics (Prometheus format): `GET /metrics`
+- Network debug snapshot: `GET /debug/network`
 - Leaderboard API: `GET /api/leaderboard`
 
 ### Onemli ENV'ler
@@ -81,7 +82,38 @@ Sonra tekrar `npm start` calistir.
 - `RECONNECT_TTL_MS` (default: 30000)
 - `MAX_CONNECTIONS`
 - `MAX_WS_PAYLOAD_BYTES`
+- `STATE_BROADCAST_HZ` (default: 30)
+- `PING_SMOOTHING_ALPHA` (default: 0.15)
+- `SERVER_JITTER_BUFFER_MS` (default: 24)
+- `ENABLE_EXTRAPOLATION` (`1` veya `0`, default: `1`)
+- `MAX_UPDATES_PER_CYCLE` (default: 2)
+- `RATE_LIMIT_NET_TELEMETRY` (default: 8)
 - `RATE_LIMIT_*` ayarlari
+
+## LAN Jitter Analizi
+
+Karsilastirmali benchmark senaryosu:
+
+```bash
+npm run bench:lan
+```
+
+Script farkli `STATE_BROADCAST_HZ` / interpolasyon / ping smoothing kombinasyonlarini calistirir ve her varyant icin:
+- state paket varis araligi (`delta`) p95/std
+- ping raw p95
+- sunucu tick/backpressure metrikleri
+
+JSON cikti ile birlikte hangi katmanda (server timing / socket backpressure / arrival jitter) baskin sorun oldugunu raporlar.
+
+Canli LAN oturumunu izleyip non-host verilerini toplamak:
+
+```bash
+npm run diagnose:lan -- http://<host-ip>:3000 40
+```
+
+- Ilk arguman: sunucu base URL (default `http://127.0.0.1:3000`)
+- Ikinci arguman: izleme suresi (sn, default 30)
+- `/debug/network` uzerinden oda/oyuncu bazli ping + state delta + tuning onerilerini cikartir
 
 ## Teknolojiler
 

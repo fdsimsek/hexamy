@@ -18,6 +18,11 @@ const MAX_BUFFERED_AMOUNT_BYTES = Number(
 );
 const STATE_BROADCAST_HZ = Number(process.env.STATE_BROADCAST_HZ || 30);
 const STATE_BROADCAST_MS = Math.max(12, 1000 / Math.max(10, STATE_BROADCAST_HZ));
+const SERVER_JITTER_BUFFER_MS = Number(process.env.SERVER_JITTER_BUFFER_MS || 24);
+const MAX_UPDATES_PER_CYCLE = Number(process.env.MAX_UPDATES_PER_CYCLE || 2);
+const ENABLE_EXTRAPOLATION = !["0", "false", "off"].includes(
+  String(process.env.ENABLE_EXTRAPOLATION || "1").toLowerCase(),
+);
 const PING_INTERVAL_MS = Number(process.env.PING_INTERVAL_MS || 200);
 const PING_SCAN_INTERVAL_MS = Number(process.env.PING_SCAN_INTERVAL_MS || 50);
 const PING_JITTER_MS = Number(process.env.PING_JITTER_MS || 10);
@@ -38,6 +43,8 @@ const RATE_LIMIT_PER_WINDOW = {
   resetSettings: Number(process.env.RATE_LIMIT_RESET_SETTINGS || 6),
   start: Number(process.env.RATE_LIMIT_START || 6),
   restart: Number(process.env.RATE_LIMIT_RESTART || 6),
+  transferHost: Number(process.env.RATE_LIMIT_TRANSFER_HOST || 8),
+  netTelemetry: Number(process.env.RATE_LIMIT_NET_TELEMETRY || 8),
   default: Number(process.env.RATE_LIMIT_DEFAULT || 40),
 };
 const wss = new WebSocketServer({
@@ -49,6 +56,138 @@ const wss = new WebSocketServer({
 app.use(express.static(path.join(__dirname, "public")));
 
 const PORT = Number(process.env.PORT || 3000);
+
+function p95(values) {
+  if (!values.length) return 0;
+  const sorted = values.slice().sort((a, b) => a - b);
+  const idx = Math.max(0, Math.floor(sorted.length * 0.95) - 1);
+  return sorted[idx];
+}
+
+function pushSample(samples, value, cap = 180) {
+  if (!Number.isFinite(value)) return;
+  if (samples.length >= cap) samples.shift();
+  samples.push(value);
+}
+
+function round2(value) {
+  return Math.round((Number(value) || 0) * 100) / 100;
+}
+
+function pickValue(value, fallback = 0) {
+  return Number.isFinite(value) ? value : fallback;
+}
+
+function emptyRoomNetStats() {
+  return {
+    tickElapsedSamples: [],
+    catchupUpdates: 0,
+    accumulatorResets: 0,
+    droppedAccumulatorMs: 0,
+    immediateSchedules: 0,
+    timeoutSchedules: 0,
+    bufferedSamples: [],
+    bufferedMaxBytes: 0,
+    stateBursts: 0,
+  };
+}
+
+function summarizeNetworkStats() {
+  const summary = {
+    roomCount: rooms.size,
+    activeWsClients: clients.size,
+    tickElapsedP95Ms: 0,
+    tickElapsedMaxMs: 0,
+    catchupUpdates: 0,
+    accumulatorResets: 0,
+    droppedAccumulatorMs: 0,
+    immediateSchedules: 0,
+    timeoutSchedules: 0,
+    wsBufferedP95Bytes: 0,
+    wsBufferedMaxBytes: 0,
+    stateBursts: 0,
+  };
+  const allTickSamples = [];
+  const allBufferedSamples = [];
+  for (const room of rooms.values()) {
+    if (!room?.netStats) continue;
+    allTickSamples.push(...room.netStats.tickElapsedSamples);
+    allBufferedSamples.push(...room.netStats.bufferedSamples);
+    summary.catchupUpdates += room.netStats.catchupUpdates || 0;
+    summary.accumulatorResets += room.netStats.accumulatorResets || 0;
+    summary.droppedAccumulatorMs += room.netStats.droppedAccumulatorMs || 0;
+    summary.immediateSchedules += room.netStats.immediateSchedules || 0;
+    summary.timeoutSchedules += room.netStats.timeoutSchedules || 0;
+    summary.stateBursts += room.netStats.stateBursts || 0;
+    summary.wsBufferedMaxBytes = Math.max(
+      summary.wsBufferedMaxBytes,
+      Number(room.netStats.bufferedMaxBytes) || 0,
+    );
+  }
+  summary.tickElapsedP95Ms = Math.round(p95(allTickSamples) * 100) / 100;
+  summary.tickElapsedMaxMs = round2(Math.max(...allTickSamples, 0));
+  summary.wsBufferedP95Bytes = Math.round(p95(allBufferedSamples));
+  summary.droppedAccumulatorMs = round2(summary.droppedAccumulatorMs);
+  return summary;
+}
+
+function summarizeRoomsDetailed() {
+  const roomsData = [];
+  for (const room of rooms.values()) {
+    const roomClients = getRoomClients(room);
+    const clientRows = roomClients
+      .filter((c) => c.team === "red" || c.team === "blue")
+      .map((client) => ({
+        id: client.id,
+        name: client.name,
+        team: client.team,
+        pingMs: pickValue(client.pingMs, null),
+        pingRawMs: pickValue(client.pingRawMs, null),
+        clientStateDeltaP95Ms: pickValue(client.netTelemetry?.stateDeltaP95Ms, null),
+        clientStateDeltaMaxMs: pickValue(client.netTelemetry?.stateDeltaMaxMs, null),
+        clientJitterBufferMs: pickValue(client.netTelemetry?.jitterBufferMs, null),
+        clientExtrapolationEnabled: client.netTelemetry?.extrapolationEnabled ?? null,
+        telemetryAgeMs: client.netTelemetry?.updatedAt
+          ? Math.max(0, Date.now() - client.netTelemetry.updatedAt)
+          : null,
+      }));
+    const deltas = clientRows
+      .map((row) => row.clientStateDeltaP95Ms)
+      .filter((value) => Number.isFinite(value));
+    const rawPings = clientRows
+      .map((row) => row.pingRawMs)
+      .filter((value) => Number.isFinite(value));
+    roomsData.push({
+      id: room.id,
+      name: room.name,
+      roomType: room.roomType,
+      gameState: room.gameState,
+      playerCount: clientRows.length,
+      stateDeltaP95Ms: Math.round(p95(deltas)),
+      pingRawP95Ms: Math.round(p95(rawPings)),
+      clients: clientRows,
+    });
+  }
+  return roomsData;
+}
+
+function buildNetworkRecommendations(networkSummary, roomBreakdown) {
+  const recs = [];
+  if ((networkSummary.wsBufferedP95Bytes || 0) > 4096 || (networkSummary.wsBufferedMaxBytes || 0) > 65536) {
+    recs.push("Socket kuyruk baskisi var: STATE_BROADCAST_HZ dusur veya payloadi sadeleştir.");
+  }
+  if ((networkSummary.accumulatorResets || 0) > 0 || (networkSummary.tickElapsedP95Ms || 0) > 19) {
+    recs.push("Server tick timing zorlanıyor: MAX_UPDATES_PER_CYCLE=2/3 ve yayin Hz dengesini test et.");
+  }
+  const highDeltaRooms = roomBreakdown.filter((room) => (room.stateDeltaP95Ms || 0) > 45);
+  if (highDeltaRooms.length > 0) {
+    recs.push("Client inter-arrival jitter yuksek: SERVER_JITTER_BUFFER_MS 24->32 ve extrapolation kapali A/B dene.");
+  }
+  if (recs.length === 0) {
+    recs.push("Belirgin server-side darboğaz görünmüyor; Wi-Fi parazit/kanal yoğunluğu ve cihaz FPS tarafını kontrol et.");
+  }
+  return recs;
+}
 
 function calculateP95Ping() {
   const values = [];
@@ -80,10 +219,54 @@ app.get("/readyz", (_req, res) => {
 });
 
 app.get("/metrics", (_req, res) => {
+  const net = summarizeNetworkStats();
   metrics.setGauge("wsClients", clients.size);
   metrics.setGauge("activeRooms", rooms.size);
   metrics.setGauge("p95PingMs", calculateP95Ping());
+  metrics.setGauge("tickElapsedP95Ms", net.tickElapsedP95Ms);
+  metrics.setGauge("tickElapsedMaxMs", net.tickElapsedMaxMs);
+  metrics.setGauge("tickAccumulatorResets", net.accumulatorResets);
+  metrics.setGauge("tickDroppedAccumulatorMs", net.droppedAccumulatorMs);
+  metrics.setGauge("tickImmediateSchedules", net.immediateSchedules);
+  metrics.setGauge("tickTimeoutSchedules", net.timeoutSchedules);
+  metrics.setGauge("wsBufferedP95Bytes", net.wsBufferedP95Bytes);
+  metrics.setGauge("wsBufferedMaxBytes", net.wsBufferedMaxBytes);
+  metrics.setGauge("stateBursts", net.stateBursts);
   res.type("text/plain").send(metrics.toPrometheus());
+});
+
+app.get("/debug/network", (_req, res) => {
+  const net = summarizeNetworkStats();
+  const roomBreakdown = summarizeRoomsDetailed();
+  const pingValues = [];
+  const pingRawValues = [];
+  for (const [, client] of clients) {
+    if (Number.isFinite(client.pingMs)) pingValues.push(client.pingMs);
+    if (Number.isFinite(client.pingRawMs)) pingRawValues.push(client.pingRawMs);
+  }
+  res.json({
+    ok: true,
+    sampledAt: Date.now(),
+    config: {
+      stateBroadcastHz: STATE_BROADCAST_HZ,
+      stateBroadcastMs: Math.round(STATE_BROADCAST_MS * 100) / 100,
+      maxUpdatesPerCycle: MAX_UPDATES_PER_CYCLE,
+      maxCatchupSteps: MAX_CATCHUP_STEPS,
+      pingIntervalMs: PING_INTERVAL_MS,
+      pingScanIntervalMs: PING_SCAN_INTERVAL_MS,
+      pingSmoothingAlpha: PING_SMOOTHING_ALPHA,
+      serverJitterBufferMs: SERVER_JITTER_BUFFER_MS,
+      enableExtrapolation: ENABLE_EXTRAPOLATION,
+    },
+    ping: {
+      clientsWithPing: pingValues.length,
+      p95Ms: Math.round(p95(pingValues)),
+      p95RawMs: Math.round(p95(pingRawValues)),
+    },
+    network: net,
+    rooms: roomBreakdown,
+    recommendations: buildNetworkRecommendations(net, roomBreakdown),
+  });
 });
 
 app.get("/api/leaderboard", (_req, res) => {
@@ -344,6 +527,8 @@ function createRoomState(name, password, roomType = "casual") {
     passwordSalt: null,
     passwordHash: null,
     clientIds: new Set(),
+    joinOrder: new Map(),
+    nextJoinSeq: 1,
     hostId: null,
     gameState: "lobby",
     ball: { x: CX, y: CY, vx: 0, vy: 0, r: BALL_R, isBall: true },
@@ -362,6 +547,8 @@ function createRoomState(name, password, roomType = "casual") {
     lastTouchId: null,
     lastAssistTouchId: null,
     pingBcastCounter: 0,
+    stateSeq: 0,
+    lastStateSentAt: 0,
     activePlayersPool: [],
     bcastPlayersPool: [],
     bcastBall: { x: 0, y: 0, vx: 0, vy: 0, r: 0 },
@@ -375,7 +562,10 @@ function createRoomState(name, password, roomType = "casual") {
       goalScoredState: null,
       kickoffPending: false,
       kickoffTeam: "",
+      seq: 0,
+      sentAt: 0,
     },
+    netStats: emptyRoomNetStats(),
   };
   room.bcastMsg.players = room.bcastPlayersPool;
   room.bcastMsg.ball = room.bcastBall;
@@ -404,6 +594,22 @@ function getRoomClients(room) {
   return list;
 }
 
+function sendActionResult(client, action, ok, code, message, extra = {}) {
+  const payload = {
+    type: "actionResult",
+    action,
+    ok: !!ok,
+    code: code || (ok ? "OK" : "ERROR"),
+    message: message || "",
+    ...extra,
+  };
+  sendToClient(client, payload);
+  // Keep legacy clients working while moving to actionResult-driven UX.
+  if (!ok && message) {
+    sendToClient(client, { type: "roomError", message });
+  }
+}
+
 function sendToClient(client, msg) {
   const ws = client?.ws;
   if (!ws || ws.readyState !== 1) return;
@@ -425,6 +631,11 @@ function broadcastRoom(room, msg) {
     if (!client) continue;
     const ws = client.ws;
     if (!ws || ws.readyState !== 1) continue;
+    const buffered = Number(ws.bufferedAmount) || 0;
+    if (room?.netStats) {
+      pushSample(room.netStats.bufferedSamples, buffered);
+      if (buffered > room.netStats.bufferedMaxBytes) room.netStats.bufferedMaxBytes = buffered;
+    }
     if (ws.bufferedAmount > MAX_BUFFERED_AMOUNT_BYTES) {
       ws.terminate();
       continue;
@@ -474,8 +685,15 @@ function broadcastRoomListAll() {
 
 function ensureRoomHost(room) {
   if (room.hostId && room.clientIds.has(room.hostId)) return;
-  const firstClientId = room.clientIds.values().next().value;
-  room.hostId = firstClientId || null;
+  let fallbackHostId = null;
+  let fallbackSeq = Infinity;
+  for (const clientId of room.clientIds) {
+    const seq = Number(room.joinOrder.get(clientId));
+    if (!Number.isFinite(seq) || seq >= fallbackSeq) continue;
+    fallbackSeq = seq;
+    fallbackHostId = clientId;
+  }
+  room.hostId = fallbackHostId;
 }
 
 function sendLobbyUpdate(room) {
@@ -498,6 +716,13 @@ function sendLobbyUpdate(room) {
   });
 }
 
+function publishRoomState(room, options = {}) {
+  const withLobby = options.withLobby !== false;
+  const withRoomList = options.withRoomList !== false;
+  if (room && withLobby) sendLobbyUpdate(room);
+  if (withRoomList) broadcastRoomListAll();
+}
+
 function stopGameLoop(room) {
   room.gameLoopRunning = false;
   if (room.gameLoopTimer) {
@@ -516,6 +741,7 @@ function leaveCurrentRoom(client, options = {}) {
   const room = getRoomByClient(client);
   if (!room) return;
   room.clientIds.delete(client.id);
+  room.joinOrder.delete(client.id);
   room.mutedIds.delete(client.id);
   if (room.hostId === client.id) room.hostId = null;
   client.roomId = null;
@@ -535,9 +761,12 @@ function leaveCurrentRoom(client, options = {}) {
     maybeCleanupRoom(room);
   } else {
     ensureRoomHost(room);
-    sendLobbyUpdate(room);
+    publishRoomState(room, { withLobby: true, withRoomList: false });
   }
 
+  if (options.sendActionResult) {
+    sendActionResult(client, options.action || "leaveRoom", true, "LEFT_ROOM", "Odadan ayrıldın.");
+  }
   broadcastRoomListAll();
   if (options.sendRoomLeft) {
     sendToClient(client, { type: "roomLeft" });
@@ -545,21 +774,28 @@ function leaveCurrentRoom(client, options = {}) {
 }
 
 function joinRoom(client, room, password, options = {}) {
+  const action = options.action || "joinRoom";
   if (!room) {
-    sendToClient(client, { type: "roomError", message: "Oda bulunamadi." });
-    return false;
+    sendActionResult(client, action, false, "ROOM_NOT_FOUND", "Oda bulunamadı.");
+    return { ok: false, code: "ROOM_NOT_FOUND" };
   }
   const normalizedPassword = sanitizePassword(password);
   if (room.passwordHash && !options.skipPassword) {
     if (isPasswordAttemptsBlocked(client)) {
-      sendToClient(client, { type: "roomError", message: "Cok fazla hatali sifre denemesi." });
-      return false;
+      sendActionResult(
+        client,
+        action,
+        false,
+        "PASSWORD_ATTEMPTS_BLOCKED",
+        "Çok fazla hatalı şifre denemesi.",
+      );
+      return { ok: false, code: "PASSWORD_ATTEMPTS_BLOCKED" };
     }
     const ok = verifyPassword(normalizedPassword, room.passwordSalt, room.passwordHash);
     if (!ok) {
       registerFailedPasswordAttempt(client);
-      sendToClient(client, { type: "roomError", message: "Sifre hatali." });
-      return false;
+      sendActionResult(client, action, false, "INVALID_PASSWORD", "Şifre hatalı.");
+      return { ok: false, code: "INVALID_PASSWORD" };
     }
   }
   clearFailedPasswordAttempts(client);
@@ -570,6 +806,7 @@ function joinRoom(client, room, password, options = {}) {
 
   if (!room.clientIds.has(client.id)) {
     room.clientIds.add(client.id);
+    room.joinOrder.set(client.id, room.nextJoinSeq++);
   }
   if (!room.hostId) room.hostId = client.id;
   client.roomId = room.id;
@@ -578,9 +815,14 @@ function joinRoom(client, room, password, options = {}) {
   client.kickCooldown = 0;
 
   sendToClient(client, { type: "roomJoined", room: getRoomSummary(room) });
-  sendLobbyUpdate(room);
-  broadcastRoomListAll();
-  return true;
+  publishRoomState(room);
+  if (!options.silentActionResult) {
+    sendActionResult(client, action, true, "JOINED_ROOM", "Odaya katıldın.", {
+      roomId: room.id,
+      roomName: room.name,
+    });
+  }
+  return { ok: true, code: "JOINED_ROOM", roomId: room.id };
 }
 
 function isClientMutedInRoom(room, clientId) {
@@ -1128,6 +1370,7 @@ function gameUpdate(room) {
 
 function broadcastState(room) {
   if (room.gameState !== "playing") return;
+  const now = Date.now();
   let len = 0;
   for (const client of getRoomClients(room)) {
     if (client.team && client.player) {
@@ -1167,6 +1410,12 @@ function broadcastState(room) {
   room.bcastMsg.goalScoredState = room.goalScoredState;
   room.bcastMsg.kickoffPending = room.kickoffPending;
   room.bcastMsg.kickoffTeam = room.kickoffTeam;
+  room.bcastMsg.seq = ++room.stateSeq;
+  room.bcastMsg.sentAt = now;
+  if (room.lastStateSentAt > 0 && now - room.lastStateSentAt > STATE_BROADCAST_MS * 1.8) {
+    room.netStats.stateBursts++;
+  }
+  room.lastStateSentAt = now;
   broadcastRoom(room, room.bcastMsg);
 
   room.pingBcastCounter++;
@@ -1217,7 +1466,7 @@ function startGameLoop(room) {
   }
   resetPositions(room);
   broadcastRoom(room, { type: "gameStart" });
-  sendLobbyUpdate(room);
+  publishRoomState(room);
 
   stopGameLoop(room);
   room.gameLoopRunning = true;
@@ -1231,24 +1480,34 @@ function startGameLoop(room) {
     const elapsedMs = Number(nowNs - lastHrNs) / 1e6;
     lastHrNs = nowNs;
     accumulator += elapsedMs;
+    pushSample(room.netStats.tickElapsedSamples, elapsedMs);
 
-    if (accumulator >= TICK_MS) {
+    let updatesThisCycle = 0;
+    while (accumulator >= TICK_MS && updatesThisCycle < Math.max(1, MAX_UPDATES_PER_CYCLE)) {
       gameUpdate(room);
       accumulator -= TICK_MS;
+      updatesThisCycle++;
       tickCount++;
       if (tickCount % BROADCAST_EVERY_N_TICKS === 0) {
         broadcastState(room);
       }
     }
+    if (updatesThisCycle > 1) {
+      room.netStats.catchupUpdates += updatesThisCycle - 1;
+    }
 
     if (accumulator > TICK_MS * MAX_CATCHUP_STEPS) {
+      room.netStats.accumulatorResets++;
+      room.netStats.droppedAccumulatorMs += accumulator;
       accumulator = 0;
     }
 
     if (room.gameState === "playing" && room.gameLoopRunning) {
       if (accumulator >= TICK_MS) {
+        room.netStats.immediateSchedules++;
         room.gameLoopTimer = setImmediate(tick);
       } else {
+        room.netStats.timeoutSchedules++;
         room.gameLoopTimer = setTimeout(tick, Math.max(1, TICK_MS - accumulator));
       }
     }
@@ -1276,28 +1535,56 @@ function handleCreateRoom(client, msg) {
   const password = sanitizePassword(msg?.password);
   const room = createRoomState(roomName, password, msg?.roomType);
   logger.info("room_created", { roomId: room.id, roomName: room.name, roomType: room.roomType });
-  joinRoom(client, room, password);
+  const joined = joinRoom(client, room, password, { action: "createRoom" });
+  if (joined.ok) {
+    sendActionResult(client, "createRoom", true, "ROOM_CREATED", "Oda oluşturuldu.", {
+      roomId: room.id,
+      roomName: room.name,
+      roomType: room.roomType,
+    });
+  }
 }
 
 function handleJoinRoom(client, msg) {
   const roomId = String(msg?.roomId ?? "");
   const room = rooms.get(roomId);
   const password = sanitizePassword(msg?.password);
-  joinRoom(client, room, password);
+  joinRoom(client, room, password, { action: "joinRoom" });
 }
 
 function handleLeaveRoom(client) {
-  if (!client.roomId) return;
-  leaveCurrentRoom(client, { sendRoomLeft: true });
+  if (!client.roomId) {
+    sendActionResult(client, "leaveRoom", false, "NOT_IN_ROOM", "Herhangi bir odada değilsin.");
+    return;
+  }
+  leaveCurrentRoom(client, { sendRoomLeft: true, sendActionResult: true, action: "leaveRoom" });
 }
 
 function handleTeam(client, msg) {
   const room = getRoomByClient(client);
-  if (!room) return;
-  if (!["red", "blue"].includes(msg.team)) return;
-  if (room.gameState === "playing" && client.team) return;
+  if (!room) {
+    sendActionResult(client, "team", false, "NOT_IN_ROOM", "Önce bir odaya katılmalısın.");
+    return;
+  }
+  if (!["red", "blue"].includes(msg.team)) {
+    sendActionResult(client, "team", false, "INVALID_TEAM", "Geçersiz takım seçimi.");
+    return;
+  }
+  if (room.gameState === "playing" && client.team) {
+    sendActionResult(
+      client,
+      "team",
+      false,
+      "TEAM_LOCKED_DURING_MATCH",
+      "Maç sırasında takım değiştirilemez.",
+    );
+    return;
+  }
   const teamCount = getRoomClients(room).filter((c) => c.team === msg.team).length;
-  if (teamCount >= MAX_TEAM_SIZE) return;
+  if (teamCount >= MAX_TEAM_SIZE) {
+    sendActionResult(client, "team", false, "TEAM_FULL", "Seçtiğin takım dolu.");
+    return;
+  }
   client.team = msg.team;
   if (room.gameState === "playing" && !client.player) {
     client.player = {
@@ -1313,26 +1600,55 @@ function handleTeam(client, msg) {
     client.matchStats = { goals: 0, assists: 0, touches: 0 };
     spawnPlayerForClient(room, client);
   }
-  sendLobbyUpdate(room);
-  broadcastRoomListAll();
+  publishRoomState(room);
+  sendActionResult(client, "team", true, "TEAM_JOINED", "Takım seçimi güncellendi.", {
+    team: msg.team,
+  });
 }
 
 function handleStart(client) {
   const room = getRoomByClient(client);
-  if (!room) return;
+  if (!room) {
+    sendActionResult(client, "start", false, "NOT_IN_ROOM", "Önce bir odaya katılmalısın.");
+    return;
+  }
   ensureRoomHost(room);
-  if (client.id !== room.hostId || !isLobbyOrEnded(room)) return;
+  if (client.id !== room.hostId) {
+    sendActionResult(client, "start", false, "NOT_HOST", "Sadece oda sahibi maçı başlatabilir.");
+    return;
+  }
+  if (!isLobbyOrEnded(room)) {
+    sendActionResult(client, "start", false, "INVALID_GAME_STATE", "Maç zaten devam ediyor.");
+    return;
+  }
   const roomClients = getRoomClients(room);
   const hasRed = roomClients.some((c) => c.team === "red");
   const hasBlue = roomClients.some((c) => c.team === "blue");
-  if (hasRed && hasBlue) startGameLoop(room);
+  if (!(hasRed && hasBlue)) {
+    sendActionResult(
+      client,
+      "start",
+      false,
+      "TEAMS_NOT_READY",
+      "Maçı başlatmak için iki takımda da en az bir oyuncu olmalı.",
+    );
+    return;
+  }
+  startGameLoop(room);
+  sendActionResult(client, "start", true, "GAME_STARTED", "Maç başlatıldı.");
 }
 
 function handleRestart(client) {
   const room = getRoomByClient(client);
-  if (!room) return;
+  if (!room) {
+    sendActionResult(client, "restart", false, "NOT_IN_ROOM", "Önce bir odaya katılmalısın.");
+    return;
+  }
   ensureRoomHost(room);
-  if (client.id !== room.hostId) return;
+  if (client.id !== room.hostId) {
+    sendActionResult(client, "restart", false, "NOT_HOST", "Sadece oda sahibi lobiye döndürebilir.");
+    return;
+  }
   stopGameLoop(room);
   room.gameState = "lobby";
   room.scoreRed = 0;
@@ -1349,8 +1665,8 @@ function handleRestart(client) {
     c.player = null;
     c.matchStats = { goals: 0, assists: 0, touches: 0 };
   }
-  sendLobbyUpdate(room);
-  broadcastRoomListAll();
+  publishRoomState(room);
+  sendActionResult(client, "restart", true, "ROOM_RESET", "Oda tekrar lobiye alındı.");
 }
 
 function handleInput(client, msg) {
@@ -1370,9 +1686,15 @@ function handleInput(client, msg) {
 
 function handleSettings(client, msg) {
   const room = getRoomByClient(client);
-  if (!room) return;
+  if (!room) {
+    sendActionResult(client, "settings", false, "NOT_IN_ROOM", "Önce bir odaya katılmalısın.");
+    return;
+  }
   ensureRoomHost(room);
-  if (client.id !== room.hostId) return;
+  if (client.id !== room.hostId) {
+    sendActionResult(client, "settings", false, "NOT_HOST", "Sadece oda sahibi ayar değiştirebilir.");
+    return;
+  }
   room.gameSettings = sanitizeSettings(msg.settings, room.gameSettings);
   const nextR = getPlayerRadius(room);
   for (const c of getRoomClients(room)) {
@@ -1388,9 +1710,21 @@ function handleSettings(client, msg) {
 
 function handleResetSettings(client) {
   const room = getRoomByClient(client);
-  if (!room) return;
+  if (!room) {
+    sendActionResult(client, "resetSettings", false, "NOT_IN_ROOM", "Önce bir odaya katılmalısın.");
+    return;
+  }
   ensureRoomHost(room);
-  if (client.id !== room.hostId) return;
+  if (client.id !== room.hostId) {
+    sendActionResult(
+      client,
+      "resetSettings",
+      false,
+      "NOT_HOST",
+      "Sadece oda sahibi ayarları sıfırlayabilir.",
+    );
+    return;
+  }
   room.gameSettings = { ...DEFAULT_GAME_SETTINGS };
   const nextR = getPlayerRadius(room);
   for (const c of getRoomClients(room)) {
@@ -1402,6 +1736,7 @@ function handleResetSettings(client) {
   }
   broadcastRoom(room, { type: "settings", settings: room.gameSettings, hostId: room.hostId });
   sendLobbyUpdate(room);
+  sendActionResult(client, "resetSettings", true, "SETTINGS_RESET", "Ayarlar varsayılanlara döndü.");
 }
 
 function handleChat(client, msg) {
@@ -1445,24 +1780,97 @@ function handleQuickChat(client, msg) {
 
 function handleMutePlayer(client, msg) {
   const room = getRoomByClient(client);
-  if (!room || !canModerateRoom(room, client)) return;
+  if (!room) {
+    sendActionResult(client, "mutePlayer", false, "NOT_IN_ROOM", "Önce bir odaya katılmalısın.");
+    return;
+  }
+  if (!canModerateRoom(room, client)) {
+    sendActionResult(client, "mutePlayer", false, "NOT_HOST", "Sadece oda sahibi susturabilir.");
+    return;
+  }
   const playerId = Number(msg?.playerId);
-  if (!Number.isFinite(playerId) || playerId === client.id) return;
+  if (!Number.isFinite(playerId) || playerId === client.id) {
+    sendActionResult(client, "mutePlayer", false, "INVALID_TARGET", "Geçersiz oyuncu seçimi.");
+    return;
+  }
   const muted = !!msg?.muted;
   if (muted) room.mutedIds.add(playerId);
   else room.mutedIds.delete(playerId);
   sendLobbyUpdate(room);
+  sendActionResult(
+    client,
+    "mutePlayer",
+    true,
+    muted ? "PLAYER_MUTED" : "PLAYER_UNMUTED",
+    muted ? "Oyuncu susturuldu." : "Oyuncunun susturması kaldırıldı.",
+    { playerId, muted },
+  );
 }
 
 function handleKickPlayer(client, msg) {
   const room = getRoomByClient(client);
-  if (!room || !canModerateRoom(room, client)) return;
+  if (!room) {
+    sendActionResult(client, "kickPlayer", false, "NOT_IN_ROOM", "Önce bir odaya katılmalısın.");
+    return;
+  }
+  if (!canModerateRoom(room, client)) {
+    sendActionResult(client, "kickPlayer", false, "NOT_HOST", "Sadece oda sahibi oyuncu atabilir.");
+    return;
+  }
   const playerId = Number(msg?.playerId);
-  if (!Number.isFinite(playerId) || playerId === client.id) return;
+  if (!Number.isFinite(playerId) || playerId === client.id) {
+    sendActionResult(client, "kickPlayer", false, "INVALID_TARGET", "Geçersiz oyuncu seçimi.");
+    return;
+  }
   const target = clientsById.get(playerId);
-  if (!target || target.roomId !== room.id) return;
-  sendToClient(target, { type: "roomError", message: "Oda sahibi tarafindan odadan atildin." });
+  if (!target || target.roomId !== room.id) {
+    sendActionResult(client, "kickPlayer", false, "TARGET_NOT_IN_ROOM", "Oyuncu odada değil.");
+    return;
+  }
+  sendActionResult(
+    target,
+    "kickedByHost",
+    false,
+    "KICKED_BY_HOST",
+    "Oda sahibi tarafından odadan atıldın.",
+  );
   leaveCurrentRoom(target, { sendRoomLeft: true });
+  sendActionResult(client, "kickPlayer", true, "PLAYER_KICKED", "Oyuncu odadan atıldı.", {
+    playerId,
+  });
+}
+
+function handleTransferHost(client, msg) {
+  const room = getRoomByClient(client);
+  if (!room) {
+    sendActionResult(client, "transferHost", false, "NOT_IN_ROOM", "Önce bir odaya katılmalısın.");
+    return;
+  }
+  ensureRoomHost(room);
+  if (client.id !== room.hostId) {
+    sendActionResult(client, "transferHost", false, "NOT_HOST", "Sadece oda sahibi host devredebilir.");
+    return;
+  }
+  const playerId = Number(msg?.playerId);
+  if (!Number.isFinite(playerId) || playerId === client.id) {
+    sendActionResult(client, "transferHost", false, "INVALID_TARGET", "Geçersiz host adayı.");
+    return;
+  }
+  if (!room.clientIds.has(playerId)) {
+    sendActionResult(client, "transferHost", false, "TARGET_NOT_IN_ROOM", "Oyuncu odada değil.");
+    return;
+  }
+  room.hostId = playerId;
+  publishRoomState(room, { withRoomList: false });
+  sendActionResult(client, "transferHost", true, "HOST_TRANSFERRED", "Host devri tamamlandı.", {
+    nextHostId: playerId,
+  });
+  const target = clientsById.get(playerId);
+  if (target) {
+    sendActionResult(target, "transferHost", true, "NOW_HOST", "Artık bu odanın sahibisin.", {
+      nextHostId: playerId,
+    });
+  }
 }
 
 function handleRequestLeaderboard(client) {
@@ -1474,6 +1882,25 @@ function handleRequestLeaderboard(client) {
     season: store.season,
     leaderboard,
   });
+}
+
+function handleNetTelemetry(client, msg) {
+  const room = getRoomByClient(client);
+  if (!room || room.gameState !== "playing") return;
+  const stateDeltaP95Ms = Number(msg?.stateDeltaP95Ms);
+  const stateDeltaMaxMs = Number(msg?.stateDeltaMaxMs);
+  const jitterBufferMs = Number(msg?.jitterBufferMs);
+  const extrapolationEnabled = !!msg?.extrapolationEnabled;
+  if (!Number.isFinite(stateDeltaP95Ms) || !Number.isFinite(stateDeltaMaxMs)) return;
+  client.netTelemetry = {
+    stateDeltaP95Ms: Math.max(0, Math.min(500, Math.round(stateDeltaP95Ms))),
+    stateDeltaMaxMs: Math.max(0, Math.min(1200, Math.round(stateDeltaMaxMs))),
+    jitterBufferMs: Number.isFinite(jitterBufferMs)
+      ? Math.max(0, Math.min(120, Math.round(jitterBufferMs)))
+      : null,
+    extrapolationEnabled,
+    updatedAt: Date.now(),
+  };
 }
 
 function handleReconnect(client, msg) {
@@ -1491,10 +1918,29 @@ function handleReconnect(client, msg) {
   sendToClient(client, { type: "reconnectResult", ok: true, token });
   if (session.roomId && rooms.has(session.roomId)) {
     const room = rooms.get(session.roomId);
-    joinRoom(client, room, "", { skipPassword: true });
-    if (session.team === "red" || session.team === "blue") {
-      client.team = session.team;
-      sendLobbyUpdate(room);
+    const joined = joinRoom(client, room, "", {
+      skipPassword: true,
+      action: "reconnectJoinRoom",
+      silentActionResult: true,
+    });
+    if (joined.ok && (session.team === "red" || session.team === "blue")) {
+      const teamCount = getRoomClients(room).filter(
+        (c) => c.id !== client.id && c.team === session.team,
+      ).length;
+      if (teamCount >= MAX_TEAM_SIZE) {
+        sendActionResult(
+          client,
+          "reconnectJoinRoom",
+          false,
+          "TEAM_FULL",
+          "Eski takimina donus yapilamadi: takim dolu.",
+        );
+      } else {
+        client.team = session.team;
+      }
+      publishRoomState(room, { withRoomList: false });
+    } else if (joined.ok) {
+      publishRoomState(room, { withRoomList: false });
     }
   }
   metrics.inc("reconnectSuccessTotal", 1);
@@ -1516,7 +1962,9 @@ const messageHandlers = {
   quickChat: handleQuickChat,
   mutePlayer: handleMutePlayer,
   kickPlayer: handleKickPlayer,
+  transferHost: handleTransferHost,
   requestLeaderboard: handleRequestLeaderboard,
+  netTelemetry: handleNetTelemetry,
   reconnect: handleReconnect,
 };
 
@@ -1662,6 +2110,7 @@ wss.on("connection", (ws, req) => {
     reconnectToken,
     chatTimestamps: [],
     matchStats: { goals: 0, assists: 0, touches: 0 },
+    netTelemetry: null,
   };
 
   if (ws._socket) {
@@ -1679,6 +2128,8 @@ wss.on("connection", (ws, req) => {
     id,
     reconnectToken,
     stateTickMs: STATE_BROADCAST_MS,
+    jitterBufferMs: Math.max(0, SERVER_JITTER_BUFFER_MS),
+    extrapolationEnabled: ENABLE_EXTRAPOLATION,
   });
   sendRoomList(clientData);
 

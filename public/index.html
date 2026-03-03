@@ -192,6 +192,21 @@
         color: #cbd5e1;
         font-size: 12px;
       }
+      #lobby-action-status {
+        min-height: 20px;
+        margin-top: 8px;
+        font-size: 12px;
+        color: #cbd5e1;
+      }
+      #lobby-action-status.success {
+        color: #7ee787;
+      }
+      #lobby-action-status.error {
+        color: #ff7b72;
+      }
+      #lobby-action-status.info {
+        color: #cbd5e1;
+      }
       #leaderboard-box {
         margin-top: 10px;
         border: 1px solid rgba(255, 255, 255, 0.1);
@@ -229,6 +244,15 @@
       }
       .my-name-display b {
         color: #fff;
+      }
+      .role-badge {
+        margin-left: 8px;
+        padding: 2px 7px;
+        border-radius: 999px;
+        border: 1px solid rgba(255, 255, 255, 0.25);
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.3px;
       }
       #leave-room-btn {
         margin-left: 8px;
@@ -292,6 +316,19 @@
         border-radius: 6px;
         font-size: 14px;
         background: rgba(255, 255, 255, 0.04);
+      }
+      .player-action-btn {
+        margin-left: 6px;
+        border: 1px solid rgba(255, 255, 255, 0.24);
+        background: rgba(255, 255, 255, 0.09);
+        color: #fff;
+        border-radius: 6px;
+        padding: 2px 6px;
+        font-size: 11px;
+        cursor: pointer;
+      }
+      .player-action-btn:hover {
+        background: rgba(255, 255, 255, 0.16);
       }
       .team-player-list li.me {
         font-weight: 700;
@@ -1102,6 +1139,7 @@
           </select>
           <button id="create-room-btn" type="submit">Oluştur</button>
         </form>
+        <div id="lobby-action-status" class="info"></div>
         <div id="leaderboard-box">
           <h4>Sezon Liderlik</h4>
           <ul id="leaderboard-list"></ul>
@@ -1112,6 +1150,7 @@
         <p class="my-name-display">Hoşgeldin, <b id="my-name-label"></b></p>
         <p class="my-name-display">
           Oda: <b id="room-name-label">-</b>
+          <span id="role-badge" class="role-badge">İzleyici</span>
           <button id="leave-room-btn" type="button">Odadan Ayrıl</button>
         </p>
         <p id="overlay-return-hint">Esc ile maça dön</p>
@@ -1394,6 +1433,12 @@
       // ============ CONNECTION ============
 
       const wsProtocol = location.protocol === "https:" ? "wss:" : "ws:";
+      const urlParams = new URLSearchParams(location.search);
+      const forceNoExtrapolation = ["1", "true", "on"].includes(
+        String(urlParams.get("noExtrap") || "").toLowerCase(),
+      );
+      const fixedJitterBufferMs = Number(urlParams.get("jitterBufferMs"));
+      const MIN_JITTER_BUFFER_MS = 8;
       let ws = null;
       let myId = null;
       let currentHostId = null;
@@ -1411,8 +1456,10 @@
       let reconnectAttempts = 0;
       let reconnectTimerId = 0;
       let sentReconnect = false;
+      let lobbyStatusTimerId = 0;
       const netStatsEl = document.getElementById("net-stats");
       const connectionStatusEl = document.getElementById("connection-status");
+      const lobbyActionStatusEl = document.getElementById("lobby-action-status");
       const leaderboardListEl = document.getElementById("leaderboard-list");
       const fpsValueEl = document.getElementById("fps-value");
       const chatMessagesEl = document.getElementById("chat-messages");
@@ -1444,6 +1491,7 @@
       const createRoomPasswordEl = document.getElementById("create-room-password");
       const createRoomTypeEl = document.getElementById("create-room-type");
       const roomNameLabelEl = document.getElementById("room-name-label");
+      const roleBadgeEl = document.getElementById("role-badge");
       const leaveRoomBtnEl = document.getElementById("leave-room-btn");
       const keybindLobbyPassEl = document.getElementById("keybind-pass-lobby");
       const keybindLobbyThroughEl = document.getElementById("keybind-through-lobby");
@@ -1488,6 +1536,38 @@
       let keyBinds = loadKeyBinds();
       function setConnectionStatus(text) {
         if (connectionStatusEl) connectionStatusEl.textContent = text;
+      }
+
+      function setLobbyActionStatus(text, level = "info", ttlMs = 2600) {
+        if (!lobbyActionStatusEl) return;
+        lobbyActionStatusEl.textContent = text || "";
+        lobbyActionStatusEl.classList.remove("info", "success", "error");
+        lobbyActionStatusEl.classList.add(level || "info");
+        if (lobbyStatusTimerId) {
+          clearTimeout(lobbyStatusTimerId);
+          lobbyStatusTimerId = 0;
+        }
+        if (ttlMs > 0 && text) {
+          lobbyStatusTimerId = window.setTimeout(() => {
+            lobbyStatusTimerId = 0;
+            lobbyActionStatusEl.textContent = "";
+            lobbyActionStatusEl.classList.remove("success", "error");
+            lobbyActionStatusEl.classList.add("info");
+          }, ttlMs);
+        }
+      }
+
+      function updateRoleBadge() {
+        if (!roleBadgeEl) return;
+        if (!currentRoomId) {
+          roleBadgeEl.textContent = "İzleyici";
+          return;
+        }
+        if (isMeHost()) {
+          roleBadgeEl.textContent = "Host";
+          return;
+        }
+        roleBadgeEl.textContent = myTeam ? "Oyuncu" : "İzleyici";
       }
 
       function scheduleReconnect() {
@@ -1548,6 +1628,9 @@
               break;
             case "roomError":
               onRoomError(msg);
+              break;
+            case "actionResult":
+              onActionResult(msg);
               break;
             case "lobby":
               onLobbyUpdate(msg);
@@ -1736,6 +1819,19 @@
         if (Number.isFinite(msg.stateTickMs)) {
           serverTickMs = Math.max(12, Number(msg.stateTickMs));
         }
+        if (Number.isFinite(msg.jitterBufferMs)) {
+          jitterBufferMs = normalizeJitterBufferMs(Number(msg.jitterBufferMs));
+        }
+        if (typeof msg.extrapolationEnabled === "boolean") {
+          allowExtrapolation = msg.extrapolationEnabled;
+        }
+        if (forceNoExtrapolation) {
+          allowExtrapolation = false;
+        }
+        if (Number.isFinite(fixedJitterBufferMs)) {
+          jitterBufferMs = normalizeJitterBufferMs(fixedJitterBufferMs);
+          adaptiveJitterBuffer = false;
+        }
         refreshSettingsUI();
         if (myName && !sentReconnect) send({ type: "join", name: myName });
         send({ type: "listRooms" });
@@ -1787,10 +1883,12 @@
         const password = createRoomPasswordEl.value;
         const roomType = createRoomTypeEl?.value === "ranked" ? "ranked" : "casual";
         send({ type: "createRoom", roomName, password, roomType });
+        setLobbyActionStatus("Oda oluşturuluyor...", "info", 1800);
         createRoomPasswordEl.value = "";
       });
       leaveRoomBtnEl?.addEventListener("click", () => {
         send({ type: "leaveRoom" });
+        setLobbyActionStatus("Odadan ayrılma isteği gönderildi...", "info", 1800);
       });
 
       function formatRoomMeta(room) {
@@ -1812,6 +1910,7 @@
         currentRoomType = msg.room.roomType || "casual";
         roomNameLabelEl.textContent = `${currentRoomName} (${currentRoomType})`;
         currentHostId = msg.room.hostId ?? null;
+        updateRoleBadge();
         applyLobbyAndGameVisibility();
       }
 
@@ -1822,13 +1921,53 @@
         currentRoomType = "casual";
         myTeam = null;
         currentGameState = "lobby";
+        prevState = null;
+        currState = null;
+        lastStateSeq = 0;
+        lastStateArrivalAt = 0;
+        lastNetTelemetrySentAt = 0;
+        stateDeltaSamples.length = 0;
+        stateDeltaP95Ms = 0;
+        stateDeltaMaxMs = 0;
         roomNameLabelEl.textContent = "-";
+        updateRoleBadge();
         applyLobbyAndGameVisibility();
         send({ type: "listRooms" });
       }
 
       function onRoomError(msg) {
-        alert(msg?.message || "Oda işlemi başarısız oldu.");
+        setLobbyActionStatus(msg?.message || "Oda işlemi başarısız oldu.", "error", 3400);
+      }
+
+      function onActionResult(msg) {
+        const ok = !!msg?.ok;
+        const action = String(msg?.action || "");
+        const code = String(msg?.code || "");
+        const message = String(msg?.message || "");
+        if (message) {
+          setLobbyActionStatus(message, ok ? "success" : "error", ok ? 2200 : 3400);
+        }
+        if (action === "leaveRoom" && ok) {
+          currentRoomId = null;
+          currentRoomName = "";
+          currentHostId = null;
+          currentRoomType = "casual";
+          myTeam = null;
+          currentGameState = "lobby";
+          roomNameLabelEl.textContent = "-";
+          updateRoleBadge();
+          applyLobbyAndGameVisibility();
+        }
+        if (action === "transferHost" && ok && Number.isFinite(Number(msg?.nextHostId))) {
+          currentHostId = Number(msg.nextHostId);
+          updateRoleBadge();
+          refreshSettingsUI();
+        }
+        if (action === "start" && !ok && code === "TEAMS_NOT_READY") {
+          const startBtn = document.getElementById("start-btn");
+          startBtn.disabled = true;
+          startBtn.title = "Her iki takımda da en az bir oyuncu olmalı.";
+        }
       }
 
       function renderRoomList() {
@@ -1855,6 +1994,7 @@
               password = prompt(`"${room.name}" odası şifreli. Şifreyi gir:`) || "";
             }
             send({ type: "joinRoom", roomId: room.roomId, password });
+            setLobbyActionStatus(`"${room.name}" odasına katılınıyor...`, "info", 1800);
           });
           li.append(left, joinBtn);
           roomListEl.appendChild(li);
@@ -1878,18 +2018,25 @@
             const muteBtn = document.createElement("button");
             muteBtn.type = "button";
             muteBtn.textContent = player.isMuted ? "Unmute" : "Mute";
-            muteBtn.style.marginLeft = "6px";
+            muteBtn.className = "player-action-btn";
             muteBtn.addEventListener("click", () => {
               send({ type: "mutePlayer", playerId: player.id, muted: !player.isMuted });
             });
             const kickBtn = document.createElement("button");
             kickBtn.type = "button";
             kickBtn.textContent = "Kick";
-            kickBtn.style.marginLeft = "4px";
+            kickBtn.className = "player-action-btn";
             kickBtn.addEventListener("click", () => {
               send({ type: "kickPlayer", playerId: player.id });
             });
-            li.append(muteBtn, kickBtn);
+            const transferBtn = document.createElement("button");
+            transferBtn.type = "button";
+            transferBtn.textContent = "Host Devret";
+            transferBtn.className = "player-action-btn";
+            transferBtn.addEventListener("click", () => {
+              send({ type: "transferHost", playerId: player.id });
+            });
+            li.append(muteBtn, kickBtn, transferBtn);
           }
           targetEl.appendChild(li);
         }
@@ -1979,22 +2126,27 @@
       document.getElementById("join-red").addEventListener("click", () => {
         if (!currentRoomId) return;
         send({ type: "team", team: "red" });
+        setLobbyActionStatus("Kırmızı takıma katılma isteği gönderildi...", "info", 1800);
       });
       document.getElementById("join-blue").addEventListener("click", () => {
         if (!currentRoomId) return;
         send({ type: "team", team: "blue" });
+        setLobbyActionStatus("Mavi takıma katılma isteği gönderildi...", "info", 1800);
       });
       document.getElementById("start-btn").addEventListener("click", () => {
         if (!currentRoomId) return;
         send({ type: "start" });
+        setLobbyActionStatus("Maç başlatma isteği gönderildi...", "info", 1800);
       });
       document.getElementById("restartBtn").addEventListener("click", () => {
         if (!currentRoomId) return;
         send({ type: "restart" });
+        setLobbyActionStatus("Oda lobiye alınıyor...", "info", 1800);
       });
       resetSettingsBtn.addEventListener("click", () => {
         if (!isMeHost()) return;
         send({ type: "resetSettings" });
+        setLobbyActionStatus("Ayarlar sıfırlanıyor...", "info", 1800);
       });
       controlsSettingsBtnEl?.addEventListener("click", openControlsSettings);
       controlsSettingsCloseEl?.addEventListener("click", closeControlsSettings);
@@ -2026,6 +2178,7 @@
           : "-";
         const prevGameState = currentGameState;
         currentGameState = msg.gameState;
+        updateRoleBadge();
         if (msg.gameState === "lobby" || msg.gameState === "ended") {
           isLobbyOverlayOpen = false;
         }
@@ -2057,8 +2210,12 @@
         ) {
           startBtn.classList.add("show");
           startBtn.disabled = !(redCount > 0 && blueCount > 0);
+          startBtn.title = startBtn.disabled
+            ? "Her iki takımda da en az bir oyuncu olmalı."
+            : "";
         } else {
           startBtn.classList.remove("show");
+          startBtn.title = "";
         }
       }
 
@@ -2189,6 +2346,15 @@
       let currState = null;
       let stateTimestamp = 0;
       let serverTickMs = 50;
+      let jitterBufferMs = 24;
+      let allowExtrapolation = true;
+      let adaptiveJitterBuffer = true;
+      let lastStateSeq = 0;
+      let lastStateArrivalAt = 0;
+      let lastNetTelemetrySentAt = 0;
+      const stateDeltaSamples = [];
+      let stateDeltaP95Ms = 0;
+      let stateDeltaMaxMs = 0;
       let gamePlayers = [];
       let gameBall = { x: CX, y: CY, vx: 0, vy: 0, r: BALL_R };
       let rendering = false;
@@ -2205,6 +2371,33 @@
       let currentZoom = ZOOM_LEVELS[currentZoomCode];
       let spectatorCameraMode = "ball";
       let spectatorFollowIndex = 0;
+
+      function getP95(values) {
+        if (!values.length) return 0;
+        const sorted = values.slice().sort((a, b) => a - b);
+        const idx = Math.max(0, Math.floor(sorted.length * 0.95) - 1);
+        return sorted[idx];
+      }
+
+      function normalizeJitterBufferMs(value) {
+        if (!Number.isFinite(value)) return MIN_JITTER_BUFFER_MS;
+        return Math.max(MIN_JITTER_BUFFER_MS, Math.round(value));
+      }
+
+      function pushStateDeltaSample(value) {
+        if (!Number.isFinite(value) || value <= 0) return;
+        if (stateDeltaSamples.length >= 180) stateDeltaSamples.shift();
+        stateDeltaSamples.push(value);
+        stateDeltaP95Ms = Math.round(getP95(stateDeltaSamples));
+        stateDeltaMaxMs = Math.round(Math.max(...stateDeltaSamples, 0));
+        if (adaptiveJitterBuffer && stateDeltaP95Ms > 0) {
+          const dynamicBuffer = Math.max(
+            MIN_JITTER_BUFFER_MS,
+            Math.min(90, stateDeltaP95Ms - serverTickMs),
+          );
+          jitterBufferMs = normalizeJitterBufferMs(dynamicBuffer);
+        }
+      }
 
       // ============ INPUT ============
 
@@ -2432,6 +2625,14 @@
         fpsSampleSum = 0;
         fpsSampleCount = 0;
         fpsSampleElapsed = 0;
+        prevState = null;
+        currState = null;
+        lastStateSeq = 0;
+        lastStateArrivalAt = 0;
+        lastNetTelemetrySentAt = 0;
+        stateDeltaSamples.length = 0;
+        stateDeltaP95Ms = 0;
+        stateDeltaMaxMs = 0;
         if (fpsValueEl) fpsValueEl.textContent = "--";
         if (winnerShowTimerId) {
           clearTimeout(winnerShowTimerId);
@@ -2444,13 +2645,24 @@
       }
 
       function onGameState(msg) {
+        const now = performance.now();
+        if (lastStateArrivalAt > 0) {
+          pushStateDeltaSample(now - lastStateArrivalAt);
+        }
+        lastStateArrivalAt = now;
+        if (Number.isFinite(msg.seq)) {
+          if (lastStateSeq > 0 && msg.seq - lastStateSeq > 1) {
+            pushStateDeltaSample(serverTickMs * (msg.seq - lastStateSeq));
+          }
+          lastStateSeq = msg.seq;
+        }
         prevState = currState;
         currState = {
           players: msg.players,
           ball: msg.ball,
-          time: performance.now(),
+          time: now,
         };
-        stateTimestamp = performance.now();
+        stateTimestamp = now;
 
         if (msg.scoreRed !== lastScoreRed) {
           document.getElementById("score-red").textContent = msg.scoreRed;
@@ -2467,6 +2679,17 @@
           document.getElementById("timer").textContent = timerStr;
           lastTimerText = timerStr;
         }
+        if (now - lastNetTelemetrySentAt >= 2000 && currentGameState === "playing") {
+          lastNetTelemetrySentAt = now;
+          send({
+            type: "netTelemetry",
+            stateDeltaP95Ms,
+            stateDeltaMaxMs,
+            jitterBufferMs: Math.round(jitterBufferMs),
+            extrapolationEnabled: !!allowExtrapolation,
+          });
+        }
+        renderNetStats();
       }
 
       function onSettingsUpdate(msg) {
@@ -2516,6 +2739,7 @@
 
       function refreshSettingsUI() {
         adminSettingsEl.classList.add("show");
+        updateRoleBadge();
         const host = isMeHost();
         settingsRoleNoteEl.textContent = host
           ? "Bu ayarlar tüm oyunculara uygulanır."
@@ -2625,10 +2849,13 @@
           : ref < 60 ? "good" : ref < 110 ? "ok" : ref < 180 ? "bad" : "critical";
         const stableText = Number.isFinite(p) ? `${p} ms` : "--";
         const rawText = Number.isFinite(pr) ? `${pr} ms` : "--";
+        const d95Text = stateDeltaP95Ms > 0 ? `${stateDeltaP95Ms} ms` : "--";
+        const dMaxText = stateDeltaMaxMs > 0 ? `${stateDeltaMaxMs} ms` : "--";
+        const modeText = allowExtrapolation ? "extrap on" : "extrap off";
 
         _netNameEl.textContent = myName || "Ping";
         _netValueEl.className = `value ${cls}`;
-        _netValueEl.textContent = `${stableText} | raw ${rawText}`;
+        _netValueEl.textContent = `${stableText} | raw ${rawText} | d95 ${d95Text} (max ${dMaxText}) | jb ${Math.round(jitterBufferMs)}ms ${modeText}`;
 
         if (netStatsEl.childElementCount !== 2) {
           netStatsEl.replaceChildren(_netTitleEl, _netRowEl);
@@ -2647,16 +2874,19 @@
           return;
         }
 
-        const elapsed = now - stateTimestamp;
-        const t = Math.min(Math.max(elapsed / serverTickMs, 0), 2.0);
+        const elapsed = Math.max(0, now - stateTimestamp - jitterBufferMs);
+        const t = Math.min(Math.max(elapsed / serverTickMs, 0), allowExtrapolation ? 2.0 : 1.0);
 
         if (t <= 1.0) {
           _lerpBall.x = prevState.ball.x + (currState.ball.x - prevState.ball.x) * t;
           _lerpBall.y = prevState.ball.y + (currState.ball.y - prevState.ball.y) * t;
-        } else {
+        } else if (allowExtrapolation) {
           const extraFrames = (t - 1.0) * serverTickMs / (1000 / 60);
           _lerpBall.x = currState.ball.x + currState.ball.vx * extraFrames;
           _lerpBall.y = currState.ball.y + currState.ball.vy * extraFrames;
+        } else {
+          _lerpBall.x = currState.ball.x;
+          _lerpBall.y = currState.ball.y;
         }
         _lerpBall.vx = currState.ball.vx;
         _lerpBall.vy = currState.ball.vy;
@@ -2690,11 +2920,14 @@
           } else if (t <= 1.0) {
             out.x = pp.x + (cp.x - pp.x) * t;
             out.y = pp.y + (cp.y - pp.y) * t;
-          } else {
+          } else if (allowExtrapolation) {
             const dvx = cp.x - pp.x;
             const dvy = cp.y - pp.y;
             out.x = cp.x + dvx * (t - 1.0);
             out.y = cp.y + dvy * (t - 1.0);
+          } else {
+            out.x = cp.x;
+            out.y = cp.y;
           }
         }
 
