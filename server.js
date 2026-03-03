@@ -1,8 +1,13 @@
 const express = require("express");
 const http = require("node:http");
+const crypto = require("node:crypto");
 const { WebSocketServer } = require("ws");
 const os = require("node:os");
 const path = require("node:path");
+const logger = require("./lib/logger");
+const { validateMessageShape } = require("./lib/validation");
+const { loadStore, saveStore } = require("./lib/persistence");
+const { Metrics } = require("./lib/metrics");
 
 const app = express();
 const server = http.createServer(app);
@@ -18,9 +23,6 @@ const PING_SCAN_INTERVAL_MS = Number(process.env.PING_SCAN_INTERVAL_MS || 50);
 const PING_JITTER_MS = Number(process.env.PING_JITTER_MS || 10);
 const PONG_TIMEOUT_MS = Number(process.env.PONG_TIMEOUT_MS || 6000);
 const PING_SMOOTHING_ALPHA = Number(process.env.PING_SMOOTHING_ALPHA || 0.15);
-const PING_SPIKE_CAP_MULTIPLIER = Number(process.env.PING_SPIKE_CAP_MULTIPLIER || 3.0);
-const PING_BASELINE_DECAY = Number(process.env.PING_BASELINE_DECAY || 0.15);
-const PING_DISPLAY_FLOOR_MS = Number(process.env.PING_DISPLAY_FLOOR_MS || 0);
 const PING_MIN_GAP_MS = Number(process.env.PING_MIN_GAP_MS || 150);
 const RATE_WINDOW_MS = Number(process.env.RATE_WINDOW_MS || 1000);
 const RATE_LIMIT_PER_WINDOW = {
@@ -28,6 +30,10 @@ const RATE_LIMIT_PER_WINDOW = {
   chat: Number(process.env.RATE_LIMIT_CHAT || 10),
   team: Number(process.env.RATE_LIMIT_TEAM || 8),
   join: Number(process.env.RATE_LIMIT_JOIN || 5),
+  listRooms: Number(process.env.RATE_LIMIT_LIST_ROOMS || 20),
+  createRoom: Number(process.env.RATE_LIMIT_CREATE_ROOM || 6),
+  joinRoom: Number(process.env.RATE_LIMIT_JOIN_ROOM || 12),
+  leaveRoom: Number(process.env.RATE_LIMIT_LEAVE_ROOM || 8),
   settings: Number(process.env.RATE_LIMIT_SETTINGS || 30),
   resetSettings: Number(process.env.RATE_LIMIT_RESET_SETTINGS || 6),
   start: Number(process.env.RATE_LIMIT_START || 6),
@@ -44,13 +50,59 @@ app.use(express.static(path.join(__dirname, "public")));
 
 const PORT = Number(process.env.PORT || 3000);
 
-// ============ GAME CONSTANTS (from .hbs map) ============
+function calculateP95Ping() {
+  const values = [];
+  for (const [, client] of clients) {
+    if (Number.isFinite(client.pingMs)) values.push(client.pingMs);
+  }
+  if (!values.length) return 0;
+  values.sort((a, b) => a - b);
+  const idx = Math.max(0, Math.floor(values.length * 0.95) - 1);
+  return values[idx];
+}
+
+app.get("/healthz", (_req, res) => {
+  res.json({
+    ok: true,
+    uptimeSec: Math.round(process.uptime()),
+    wsClients: clients.size,
+    rooms: rooms.size,
+  });
+});
+
+app.get("/readyz", (_req, res) => {
+  const ready = !shuttingDown;
+  res.status(ready ? 200 : 503).json({
+    ready,
+    wsClients: clients.size,
+    rooms: rooms.size,
+  });
+});
+
+app.get("/metrics", (_req, res) => {
+  metrics.setGauge("wsClients", clients.size);
+  metrics.setGauge("activeRooms", rooms.size);
+  metrics.setGauge("p95PingMs", calculateP95Ping());
+  res.type("text/plain").send(metrics.toPrometheus());
+});
+
+app.get("/api/leaderboard", (_req, res) => {
+  const rows = Object.values(store.players)
+    .sort((a, b) => (b.elo || 1000) - (a.elo || 1000))
+    .slice(0, 30);
+  res.json({
+    season: store.season,
+    leaderboard: rows,
+  });
+});
+
+// ============ GAME CONSTANTS ============
 
 const SCALE = 0.64;
-const W = 1100,
-  H = 640;
-const CX = W / 2,
-  CY = H / 2;
+const W = 1100;
+const H = 640;
+const CX = W / 2;
+const CY = H / 2;
 
 const FIELD_HW = 594.56 * SCALE;
 const FIELD_HH = 297.28 * SCALE;
@@ -78,6 +130,8 @@ const DEFAULT_GAME_SETTINGS = {
   kickStrength: 6 * SCALE,
   kickRangeBonus: 4,
   ballDamping: 0.99,
+  playerSizeScale: 1,
+  fieldScale: 1,
 };
 
 const SETTINGS_LIMITS = {
@@ -88,14 +142,42 @@ const SETTINGS_LIMITS = {
   kickStrength: [2 * SCALE, 12 * SCALE],
   kickRangeBonus: [0, 24],
   ballDamping: [0.93, 0.999],
+  playerSizeScale: [0.7, 1.35],
+  fieldScale: [0.8, 1.25],
 };
 
 const PLAYER_INV_MASS = 0.5;
 const BALL_INV_MASS = 1;
-
 const WIN_SCORE = 5;
 const GOAL_CELEBRATION_FRAMES = 300;
 const SPAWN_DIST = 170 * SCALE;
+const MAX_TEAM_SIZE = 4;
+const TICK_MS = 1000 / 60;
+const BROADCAST_EVERY_N_TICKS = Math.max(1, Math.round(STATE_BROADCAST_MS / TICK_MS));
+const MAX_CATCHUP_STEPS = 4;
+const PASSWORD_FAIL_WINDOW_MS = 10000;
+const PASSWORD_FAIL_LIMIT = 8;
+const ROOM_NAME_MAX_LEN = 28;
+const ROOM_PASSWORD_MAX_LEN = 64;
+const RECONNECT_TTL_MS = Number(process.env.RECONNECT_TTL_MS || 30000);
+const ALLOWED_ORIGINS = String(process.env.ALLOWED_ORIGINS || "")
+  .split(",")
+  .map((it) => it.trim())
+  .filter(Boolean);
+const BANNED_CHAT_TERMS = String(
+  process.env.BANNED_CHAT_TERMS || "aq,salak,mal,oç,oc,amk,anan",
+)
+  .split(",")
+  .map((it) => it.trim().toLowerCase())
+  .filter(Boolean);
+const CHAT_FLOOD_WINDOW_MS = Number(process.env.CHAT_FLOOD_WINDOW_MS || 6000);
+const CHAT_FLOOD_LIMIT = Number(process.env.CHAT_FLOOD_LIMIT || 5);
+const QUICK_CHAT_MAP = {
+  hype: "Hadi baski!",
+  pass: "Pas ver!",
+  defend: "Defansa don!",
+  gg: "GG!",
+};
 
 const goalPosts = [
   { x: FIELD_X1, y: GOAL_Y1, r: GOAL_POST_R },
@@ -104,34 +186,56 @@ const goalPosts = [
   { x: FIELD_X2, y: GOAL_Y2, r: GOAL_POST_R },
 ];
 
-// ============ GAME STATE ============
+function getFieldMetrics(room) {
+  const fieldScale = clamp(Number(room?.gameSettings?.fieldScale) || 1, 0.8, 1.25);
+  const hw = FIELD_HW * fieldScale;
+  const hh = FIELD_HH * fieldScale;
+  const goalHH = GOAL_HH * fieldScale;
+  const goalDepth = GOAL_DEPTH * fieldScale;
+  const kickoffR = KICKOFF_R * fieldScale;
+  return {
+    fieldScale,
+    x1: CX - hw,
+    x2: CX + hw,
+    y1: CY - hh,
+    y2: CY + hh,
+    goalY1: CY - goalHH,
+    goalY2: CY + goalHH,
+    goalDepth,
+    kickoffR,
+    goalPosts: [
+      { x: CX - hw, y: CY - goalHH, r: GOAL_POST_R },
+      { x: CX - hw, y: CY + goalHH, r: GOAL_POST_R },
+      { x: CX + hw, y: CY - goalHH, r: GOAL_POST_R },
+      { x: CX + hw, y: CY + goalHH, r: GOAL_POST_R },
+    ],
+  };
+}
+
+function getPlayerRadius(room) {
+  const playerScale = clamp(Number(room?.gameSettings?.playerSizeScale) || 1, 0.7, 1.35);
+  return PLAYER_R * playerScale;
+}
+
+// ============ GLOBAL STATE ============
 
 let nextId = 1;
-const clients = new Map(); // ws -> { id, name, team, keys, kickCooldown }
-
-let gameState = "lobby"; // 'lobby' | 'playing' | 'ended'
-let hostId = null;
-let ball = { x: CX, y: CY, vx: 0, vy: 0, r: BALL_R };
-let scoreRed = 0;
-let scoreBlue = 0;
-let gameTime = 0;
-let goalScoredState = null;
-let goalScoredTimer = 0;
-let gameLoopRunning = false;
+let nextRoomId = 1;
+const clients = new Map(); // ws -> client
+const clientsById = new Map(); // id -> client
+const rooms = new Map(); // roomId -> room
+const reconnectSessions = new Map(); // token -> session snapshot
 let pingInterval = null;
-let gameSettings = { ...DEFAULT_GAME_SETTINGS };
-let kickoffPending = false;
-let kickoffTeam = "red";
-let nextKickoffTeam = "red";
-
-// ============ PHYSICS ============
+let shuttingDown = false;
+const metrics = new Metrics();
+const store = loadStore();
 
 function clamp(v, min, max) {
   return Math.max(min, Math.min(max, v));
 }
 
-function sanitizeSettings(rawSettings) {
-  const next = { ...gameSettings };
+function sanitizeSettings(rawSettings, currentSettings) {
+  const next = { ...currentSettings };
   if (!rawSettings || typeof rawSettings !== "object") return next;
   for (const [key, [min, max]] of Object.entries(SETTINGS_LIMITS)) {
     const value = Number(rawSettings[key]);
@@ -141,35 +245,390 @@ function sanitizeSettings(rawSettings) {
   return next;
 }
 
-const _activePlayersPool = [];
+function sanitizeName(rawName, fallback) {
+  const name = String(rawName ?? "").trim().slice(0, 16);
+  return name || fallback;
+}
 
-function getPlayersArray() {
+function sanitizeRoomName(rawName, fallback) {
+  const name = String(rawName ?? "").trim().slice(0, ROOM_NAME_MAX_LEN);
+  return name || fallback;
+}
+
+function sanitizePassword(rawPassword) {
+  if (rawPassword == null) return "";
+  return String(rawPassword).slice(0, ROOM_PASSWORD_MAX_LEN);
+}
+
+function sanitizeRoomType(rawType) {
+  return rawType === "ranked" ? "ranked" : "casual";
+}
+
+function createReconnectToken() {
+  return crypto.randomBytes(18).toString("base64url");
+}
+
+function cleanupReconnectSessions() {
+  const now = Date.now();
+  for (const [token, session] of reconnectSessions) {
+    if (session.expiresAt <= now) reconnectSessions.delete(token);
+  }
+}
+
+function sanitizeChatText(rawText) {
+  let text = String(rawText ?? "").trim().slice(0, 180);
+  if (!text) return "";
+  const lowered = text.toLowerCase();
+  for (const term of BANNED_CHAT_TERMS) {
+    if (!term) continue;
+    if (lowered.includes(term)) {
+      const mask = "*".repeat(Math.min(term.length, 6));
+      text = text.replace(new RegExp(term, "gi"), mask);
+    }
+  }
+  return text;
+}
+
+function getPlayerStoreEntryByClient(client) {
+  const key = client.reconnectToken;
+  if (!store.players[key]) {
+    store.players[key] = {
+      key,
+      name: client.name,
+      elo: 1000,
+      matches: 0,
+      wins: 0,
+      losses: 0,
+      draws: 0,
+      goals: 0,
+      assists: 0,
+      weeklyQuests: {
+        goals3: 0,
+        assists2: 0,
+        wins2: 0,
+      },
+      updatedAt: Date.now(),
+    };
+  }
+  return store.players[key];
+}
+
+function updateWeeklyQuests(entry, matchStats, didWin) {
+  if (!entry?.weeklyQuests) entry.weeklyQuests = { goals3: 0, assists2: 0, wins2: 0 };
+  if ((matchStats.goals || 0) >= 3) entry.weeklyQuests.goals3 = 1;
+  if ((matchStats.assists || 0) >= 2) entry.weeklyQuests.assists2 = 1;
+  if (didWin) entry.weeklyQuests.wins2 = Math.min(2, (entry.weeklyQuests.wins2 || 0) + 1);
+}
+
+function createPasswordHash(password) {
+  const salt = crypto.randomBytes(16).toString("hex");
+  const hash = crypto.scryptSync(password, salt, 64).toString("hex");
+  return { salt, hash };
+}
+
+function verifyPassword(password, salt, expectedHashHex) {
+  const candidateHex = crypto.scryptSync(password, salt, 64).toString("hex");
+  const expected = Buffer.from(expectedHashHex, "hex");
+  const candidate = Buffer.from(candidateHex, "hex");
+  if (expected.length !== candidate.length) return false;
+  return crypto.timingSafeEqual(expected, candidate);
+}
+
+function createRoomState(name, password, roomType = "casual") {
+  const roomId = String(nextRoomId++);
+  const room = {
+    id: roomId,
+    name,
+    roomType: sanitizeRoomType(roomType),
+    createdAt: Date.now(),
+    passwordSalt: null,
+    passwordHash: null,
+    clientIds: new Set(),
+    hostId: null,
+    gameState: "lobby",
+    ball: { x: CX, y: CY, vx: 0, vy: 0, r: BALL_R, isBall: true },
+    scoreRed: 0,
+    scoreBlue: 0,
+    gameTime: 0,
+    goalScoredState: null,
+    goalScoredTimer: 0,
+    gameSettings: { ...DEFAULT_GAME_SETTINGS },
+    kickoffPending: false,
+    kickoffTeam: "red",
+    nextKickoffTeam: "red",
+    gameLoopRunning: false,
+    gameLoopTimer: null,
+    mutedIds: new Set(),
+    lastTouchId: null,
+    lastAssistTouchId: null,
+    pingBcastCounter: 0,
+    activePlayersPool: [],
+    bcastPlayersPool: [],
+    bcastBall: { x: 0, y: 0, vx: 0, vy: 0, r: 0 },
+    bcastMsg: {
+      type: "state",
+      players: null,
+      ball: null,
+      scoreRed: 0,
+      scoreBlue: 0,
+      time: 0,
+      goalScoredState: null,
+      kickoffPending: false,
+      kickoffTeam: "",
+    },
+  };
+  room.bcastMsg.players = room.bcastPlayersPool;
+  room.bcastMsg.ball = room.bcastBall;
+
+  const normalizedPassword = sanitizePassword(password);
+  if (normalizedPassword) {
+    const { salt, hash } = createPasswordHash(normalizedPassword);
+    room.passwordSalt = salt;
+    room.passwordHash = hash;
+  }
+  rooms.set(roomId, room);
+  return room;
+}
+
+function getRoomByClient(client) {
+  if (!client?.roomId) return null;
+  return rooms.get(client.roomId) || null;
+}
+
+function getRoomClients(room) {
+  const list = [];
+  for (const id of room.clientIds) {
+    const client = clientsById.get(id);
+    if (client) list.push(client);
+  }
+  return list;
+}
+
+function sendToClient(client, msg) {
+  const ws = client?.ws;
+  if (!ws || ws.readyState !== 1) return;
+  if (ws.bufferedAmount > MAX_BUFFERED_AMOUNT_BYTES) {
+    ws.terminate();
+    return;
+  }
+  try {
+    ws.send(JSON.stringify(msg));
+  } catch {
+    ws.terminate();
+  }
+}
+
+function broadcastRoom(room, msg) {
+  const data = JSON.stringify(msg);
+  for (const clientId of room.clientIds) {
+    const client = clientsById.get(clientId);
+    if (!client) continue;
+    const ws = client.ws;
+    if (!ws || ws.readyState !== 1) continue;
+    if (ws.bufferedAmount > MAX_BUFFERED_AMOUNT_BYTES) {
+      ws.terminate();
+      continue;
+    }
+    try {
+      ws.send(data);
+    } catch {
+      ws.terminate();
+    }
+  }
+}
+
+function getRoomSummary(room) {
+  let red = 0;
+  let blue = 0;
+  let spectators = 0;
+  for (const client of getRoomClients(room)) {
+    if (client.team === "red") red++;
+    else if (client.team === "blue") blue++;
+    else spectators++;
+  }
+  return {
+    roomId: room.id,
+    name: room.name,
+    roomType: room.roomType,
+    hasPassword: !!room.passwordHash,
+    gameState: room.gameState,
+    hostId: room.hostId,
+    redCount: red,
+    blueCount: blue,
+    spectatorCount: spectators,
+    totalCount: red + blue + spectators,
+    createdAt: room.createdAt,
+  };
+}
+
+function sendRoomList(client) {
+  const roomList = [...rooms.values()]
+    .map(getRoomSummary)
+    .sort((a, b) => a.createdAt - b.createdAt);
+  sendToClient(client, { type: "roomList", rooms: roomList });
+}
+
+function broadcastRoomListAll() {
+  for (const [, client] of clients) sendRoomList(client);
+}
+
+function ensureRoomHost(room) {
+  if (room.hostId && room.clientIds.has(room.hostId)) return;
+  const firstClientId = room.clientIds.values().next().value;
+  room.hostId = firstClientId || null;
+}
+
+function sendLobbyUpdate(room) {
+  ensureRoomHost(room);
+  const players = getRoomClients(room).map((c) => ({
+    id: c.id,
+    name: c.name,
+    team: c.team,
+  }));
+  broadcastRoom(room, {
+    type: "lobby",
+    roomId: room.id,
+    roomName: room.name,
+    players,
+    hostId: room.hostId,
+    gameState: room.gameState,
+    roomType: room.roomType,
+    mutedIds: [...room.mutedIds],
+    settings: room.gameSettings,
+  });
+}
+
+function stopGameLoop(room) {
+  room.gameLoopRunning = false;
+  if (room.gameLoopTimer) {
+    clearTimeout(room.gameLoopTimer);
+    room.gameLoopTimer = null;
+  }
+}
+
+function maybeCleanupRoom(room) {
+  if (room.clientIds.size > 0) return;
+  stopGameLoop(room);
+  rooms.delete(room.id);
+}
+
+function leaveCurrentRoom(client, options = {}) {
+  const room = getRoomByClient(client);
+  if (!room) return;
+  room.clientIds.delete(client.id);
+  room.mutedIds.delete(client.id);
+  if (room.hostId === client.id) room.hostId = null;
+  client.roomId = null;
+  client.team = null;
+  client.player = null;
+  client.kickCooldown = 0;
+  client.keys.up = false;
+  client.keys.down = false;
+  client.keys.left = false;
+  client.keys.right = false;
+  client.keys.pass = false;
+  client.keys.throughPass = false;
+  client.keys.shoot = false;
+  client.keys.kick = false;
+
+  if (room.clientIds.size === 0) {
+    maybeCleanupRoom(room);
+  } else {
+    ensureRoomHost(room);
+    sendLobbyUpdate(room);
+  }
+
+  broadcastRoomListAll();
+  if (options.sendRoomLeft) {
+    sendToClient(client, { type: "roomLeft" });
+  }
+}
+
+function joinRoom(client, room, password, options = {}) {
+  if (!room) {
+    sendToClient(client, { type: "roomError", message: "Oda bulunamadi." });
+    return false;
+  }
+  const normalizedPassword = sanitizePassword(password);
+  if (room.passwordHash && !options.skipPassword) {
+    if (isPasswordAttemptsBlocked(client)) {
+      sendToClient(client, { type: "roomError", message: "Cok fazla hatali sifre denemesi." });
+      return false;
+    }
+    const ok = verifyPassword(normalizedPassword, room.passwordSalt, room.passwordHash);
+    if (!ok) {
+      registerFailedPasswordAttempt(client);
+      sendToClient(client, { type: "roomError", message: "Sifre hatali." });
+      return false;
+    }
+  }
+  clearFailedPasswordAttempts(client);
+
+  if (client.roomId && client.roomId !== room.id) {
+    leaveCurrentRoom(client);
+  }
+
+  if (!room.clientIds.has(client.id)) {
+    room.clientIds.add(client.id);
+  }
+  if (!room.hostId) room.hostId = client.id;
+  client.roomId = room.id;
+  client.team = null;
+  client.player = null;
+  client.kickCooldown = 0;
+
+  sendToClient(client, { type: "roomJoined", room: getRoomSummary(room) });
+  sendLobbyUpdate(room);
+  broadcastRoomListAll();
+  return true;
+}
+
+function isClientMutedInRoom(room, clientId) {
+  return room?.mutedIds?.has(clientId);
+}
+
+function canModerateRoom(room, client) {
+  ensureRoomHost(room);
+  return room && client && room.hostId === client.id;
+}
+
+function isLobbyOrEnded(room) {
+  return room.gameState === "lobby" || room.gameState === "ended";
+}
+
+// ============ PHYSICS (ROOM SCOPED) ============
+
+function getPlayersArray(room) {
   let len = 0;
-  for (const [, client] of clients) {
+  const roomClients = getRoomClients(room);
+  for (const client of roomClients) {
     if (client.team && client.player) {
-      if (len >= _activePlayersPool.length) {
-        _activePlayersPool.push({ client: null, player: null });
+      if (len >= room.activePlayersPool.length) {
+        room.activePlayersPool.push({ client: null, player: null });
       }
-      _activePlayersPool[len].client = client;
-      _activePlayersPool[len].player = client.player;
+      room.activePlayersPool[len].client = client;
+      room.activePlayersPool[len].player = client.player;
       len++;
     }
   }
-  _activePlayersPool.length = len;
-  return _activePlayersPool;
+  room.activePlayersPool.length = len;
+  return room.activePlayersPool;
 }
 
-function resetPositions() {
+function resetPositions(room) {
+  const { fieldScale } = getFieldMetrics(room);
+  const spawnDist = SPAWN_DIST * fieldScale;
   const reds = [];
   const blues = [];
-  for (const [, c] of clients) {
-    if (c.team === "red" && c.player) reds.push(c.player);
-    if (c.team === "blue" && c.player) blues.push(c.player);
+  for (const client of getRoomClients(room)) {
+    if (client.team === "red" && client.player) reds.push(client.player);
+    if (client.team === "blue" && client.player) blues.push(client.player);
   }
 
   const redSpacing = reds.length > 1 ? 50 : 0;
   reds.forEach((p, i) => {
-    p.x = CX - SPAWN_DIST;
+    p.r = getPlayerRadius(room);
+    p.x = CX - spawnDist;
     p.y = CY + (i - (reds.length - 1) / 2) * redSpacing;
     p.vx = 0;
     p.vy = 0;
@@ -177,40 +636,44 @@ function resetPositions() {
 
   const blueSpacing = blues.length > 1 ? 50 : 0;
   blues.forEach((p, i) => {
-    p.x = CX + SPAWN_DIST;
+    p.r = getPlayerRadius(room);
+    p.x = CX + spawnDist;
     p.y = CY + (i - (blues.length - 1) / 2) * blueSpacing;
     p.vx = 0;
     p.vy = 0;
   });
 
-  ball.x = CX;
-  ball.y = CY;
-  ball.vx = 0;
-  ball.vy = 0;
+  room.ball.x = CX;
+  room.ball.y = CY;
+  room.ball.vx = 0;
+  room.ball.vy = 0;
 }
 
-function spawnPlayerForClient(client) {
+function spawnPlayerForClient(room, client) {
   if (!client?.player || !client.team) return;
-  const teamPlayers = [...clients.values()].filter(
+  const { fieldScale } = getFieldMetrics(room);
+  const teamPlayers = getRoomClients(room).filter(
     (c) => c.team === client.team && c.player,
   );
   const idx = Math.max(0, teamPlayers.findIndex((c) => c.id === client.id));
   const spacing = 45;
-  const x = client.team === "red" ? CX - SPAWN_DIST : CX + SPAWN_DIST;
+  const spawnDist = SPAWN_DIST * fieldScale;
+  const x = client.team === "red" ? CX - spawnDist : CX + spawnDist;
   const y = CY + (idx - (teamPlayers.length - 1) / 2) * spacing;
+  client.player.r = getPlayerRadius(room);
   client.player.x = x;
   client.player.y = y;
   client.player.vx = 0;
   client.player.vy = 0;
 }
 
-function handlePlayerInput(client) {
+function handlePlayerInput(room, client) {
   const p = client.player;
   const keys = client.keys;
   if (!p || !keys) return;
 
-  let ax = 0,
-    ay = 0;
+  let ax = 0;
+  let ay = 0;
   if (keys.up) ay -= 1;
   if (keys.down) ay += 1;
   if (keys.left) ax -= 1;
@@ -223,8 +686,8 @@ function handlePlayerInput(client) {
 
   const isKicking = keys.shoot || keys.pass || keys.throughPass || keys.kick;
   p.kicking = isKicking;
-  const accel = isKicking ? gameSettings.playerKickAccel : gameSettings.playerAccel;
-  let damp = isKicking ? gameSettings.playerKickDamping : gameSettings.playerDamping;
+  const accel = isKicking ? room.gameSettings.playerKickAccel : room.gameSettings.playerAccel;
+  let damp = isKicking ? room.gameSettings.playerKickDamping : room.gameSettings.playerDamping;
 
   if (ax !== 0 || ay !== 0) {
     const dot = p.vx * ax + p.vy * ay;
@@ -263,7 +726,6 @@ function circleCollision(a, b) {
   const bIM = b.isBall ? BALL_INV_MASS : PLAYER_INV_MASS;
   const totalIM = aIM + bIM;
 
-  // Keep a tiny gap so circles never visually sink into each other.
   const targetDist = minDist + 0.001;
   const overlap = targetDist - dist;
   a.x -= nx * overlap * (aIM / totalIM);
@@ -283,11 +745,11 @@ function circleCollision(a, b) {
   }
 }
 
-function kickBall(player, powerScale = 1, dirOverride = null) {
-  const dx = ball.x - player.x,
-    dy = ball.y - player.y;
+function kickBall(room, player, powerScale = 1, dirOverride = null, toucherClientId = null) {
+  const dx = room.ball.x - player.x;
+  const dy = room.ball.y - player.y;
   const dist = Math.hypot(dx, dy);
-  const kickRange = PLAYER_R + BALL_R + gameSettings.kickRangeBonus;
+  const kickRange = (player?.r || getPlayerRadius(room)) + BALL_R + room.gameSettings.kickRangeBonus;
   if (dist < kickRange && dist > 0.001) {
     const nx = dx / dist;
     const ny = dy / dist;
@@ -296,26 +758,29 @@ function kickBall(player, powerScale = 1, dirOverride = null) {
     const dirLen = Math.hypot(dirX, dirY);
     const fx = dirLen > 0.0001 ? dirX / dirLen : nx;
     const fy = dirLen > 0.0001 ? dirY / dirLen : ny;
-    ball.vx += fx * gameSettings.kickStrength * powerScale;
-    ball.vy += fy * gameSettings.kickStrength * powerScale;
+    room.ball.vx += fx * room.gameSettings.kickStrength * powerScale;
+    room.ball.vy += fy * room.gameSettings.kickStrength * powerScale;
+    if (toucherClientId != null) {
+      room.lastAssistTouchId = room.lastTouchId;
+      room.lastTouchId = toucherClientId;
+    }
     return true;
   }
   return false;
 }
 
-function findTeammateTarget(client, teamPlayers, leadFrames = 0) {
+function findTeammateTarget(room, client, teamPlayers, leadFrames = 0) {
   const teammates = (teamPlayers[client.team] || []).filter(
     ({ client: teammate }) => teammate.id !== client.id,
   );
   if (teammates.length === 0) return null;
-
   let best = null;
   let bestDist = Infinity;
   for (const { player } of teammates) {
     const tx = player.x + player.vx * leadFrames;
     const ty = player.y + player.vy * leadFrames;
-    const dx = tx - ball.x;
-    const dy = ty - ball.y;
+    const dx = tx - room.ball.x;
+    const dy = ty - room.ball.y;
     const d = Math.hypot(dx, dy);
     if (d < bestDist) {
       bestDist = d;
@@ -325,39 +790,39 @@ function findTeammateTarget(client, teamPlayers, leadFrames = 0) {
   return best;
 }
 
-function performBallAction(client, teamPlayers, actionType) {
+function performBallAction(room, client, teamPlayers, actionType) {
   const action = actionType === "kick" ? "shoot" : actionType;
   if (action === "pass") {
-    const passDir = findTeammateTarget(client, teamPlayers, 0);
-    return kickBall(client.player, 0.56, passDir);
+    const passDir = findTeammateTarget(room, client, teamPlayers, 0);
+    return kickBall(room, client.player, 0.56, passDir, client.id);
   }
   if (action === "throughPass") {
-    const throughDir = findTeammateTarget(client, teamPlayers, 10);
-    return kickBall(client.player, 0.74, throughDir);
+    const throughDir = findTeammateTarget(room, client, teamPlayers, 10);
+    return kickBall(room, client.player, 0.74, throughDir, client.id);
   }
-  return kickBall(client.player, 1);
+  return kickBall(room, client.player, 1, null, client.id);
 }
 
-function clampAxis(obj, pos, limit, prop, velProp, sign) {
+function clampAxis(obj, limit, prop, velProp, sign) {
   obj[prop] = limit + sign * obj.r;
   obj[velProp] = sign * Math.abs(obj[velProp]) * 0.5;
 }
 
 function constrainGoalZone(obj, xMin, xMax, yMin, yMax) {
-  if (obj.x - obj.r < xMin) clampAxis(obj, obj.x, xMin, "x", "vx", 1);
-  if (obj.x + obj.r > xMax) clampAxis(obj, obj.x, xMax, "x", "vx", -1);
-  if (obj.y - obj.r < yMin) clampAxis(obj, obj.y, yMin, "y", "vy", 1);
-  if (obj.y + obj.r > yMax) clampAxis(obj, obj.y, yMax, "y", "vy", -1);
+  if (obj.x - obj.r < xMin) clampAxis(obj, xMin, "x", "vx", 1);
+  if (obj.x + obj.r > xMax) clampAxis(obj, xMax, "x", "vx", -1);
+  if (obj.y - obj.r < yMin) clampAxis(obj, yMin, "y", "vy", 1);
+  if (obj.y + obj.r > yMax) clampAxis(obj, yMax, "y", "vy", -1);
 }
 
 function constrainPostCollision(obj, post) {
-  const dx = obj.x - post.x,
-    dy = obj.y - post.y;
+  const dx = obj.x - post.x;
+  const dy = obj.y - post.y;
   const dist = Math.hypot(dx, dy);
   const minD = obj.r + post.r;
   if (dist >= minD || dist <= 0.001) return;
-  const nx = dx / dist,
-    ny = dy / dist;
+  const nx = dx / dist;
+  const ny = dy / dist;
   obj.x = post.x + nx * minD;
   obj.y = post.y + ny * minD;
   const dot = obj.vx * nx + obj.vy * ny;
@@ -367,76 +832,159 @@ function constrainPostCollision(obj, post) {
   }
 }
 
-function constrainObj(obj) {
+function constrainObj(room, obj) {
+  const field = getFieldMetrics(room);
   const outsideMargin = obj.isBall ? 0 : PLAYER_OUTSIDE_MARGIN;
-  const pastLeftX = obj.x - obj.r < FIELD_X1;
-  const pastRightX = obj.x + obj.r > FIELD_X2;
-  const inGoalY = obj.y + obj.r > GOAL_Y1 && obj.y - obj.r < GOAL_Y2;
-
+  const pastLeftX = obj.x - obj.r < field.x1;
+  const pastRightX = obj.x + obj.r > field.x2;
+  const inGoalY = obj.y + obj.r > field.goalY1 && obj.y - obj.r < field.goalY2;
   const inLeftGoal = pastLeftX && inGoalY;
   const inRightGoal = pastRightX && inGoalY;
 
   if (inLeftGoal) {
     constrainGoalZone(
       obj,
-      FIELD_X1 - GOAL_DEPTH - outsideMargin,
+      field.x1 - field.goalDepth - outsideMargin,
       Infinity,
-      GOAL_Y1 - outsideMargin,
-      GOAL_Y2 + outsideMargin,
+      field.goalY1 - outsideMargin,
+      field.goalY2 + outsideMargin,
     );
   } else if (inRightGoal) {
     constrainGoalZone(
       obj,
       -Infinity,
-      FIELD_X2 + GOAL_DEPTH + outsideMargin,
-      GOAL_Y1 - outsideMargin,
-      GOAL_Y2 + outsideMargin,
+      field.x2 + field.goalDepth + outsideMargin,
+      field.goalY1 - outsideMargin,
+      field.goalY2 + outsideMargin,
     );
   } else {
     constrainGoalZone(
       obj,
-      FIELD_X1 - outsideMargin,
-      FIELD_X2 + outsideMargin,
-      FIELD_Y1 - outsideMargin,
-      FIELD_Y2 + outsideMargin,
+      field.x1 - outsideMargin,
+      field.x2 + outsideMargin,
+      field.y1 - outsideMargin,
+      field.y2 + outsideMargin,
     );
   }
 
-  for (const post of goalPosts) constrainPostCollision(obj, post);
+  for (const post of field.goalPosts) constrainPostCollision(obj, post);
 }
 
-function isGoal() {
-  if (ball.x < FIELD_X1 && ball.y > GOAL_Y1 && ball.y < GOAL_Y2) return "blue";
-  if (ball.x > FIELD_X2 && ball.y > GOAL_Y1 && ball.y < GOAL_Y2) return "red";
+function isGoal(room) {
+  const field = getFieldMetrics(room);
+  if (room.ball.x < field.x1 && room.ball.y > field.goalY1 && room.ball.y < field.goalY2) return "blue";
+  if (room.ball.x > field.x2 && room.ball.y > field.goalY1 && room.ball.y < field.goalY2) return "red";
   return null;
 }
 
-function handleGoalCelebration() {
-  goalScoredTimer--;
-  if (goalScoredTimer > 0) return false;
+function calculateEloDelta(playerElo, opponentAvgElo, score) {
+  const expected = 1 / (1 + 10 ** ((opponentAvgElo - playerElo) / 400));
+  const kFactor = 24;
+  return Math.round(kFactor * (score - expected));
+}
+
+function completeMatchPersistence(room, winnerTeam) {
+  const participants = getRoomClients(room).filter((c) => c.team === "red" || c.team === "blue");
+  if (!participants.length) return { mvp: null };
+
+  const withStats = participants.map((client) => ({
+    client,
+    stats: client.matchStats || { goals: 0, assists: 0, touches: 0 },
+  }));
+  withStats.sort(
+    (a, b) =>
+      b.stats.goals * 4 +
+      b.stats.assists * 3 +
+      b.stats.touches -
+      (a.stats.goals * 4 + a.stats.assists * 3 + a.stats.touches),
+  );
+  const mvp = withStats[0]?.client
+    ? {
+        id: withStats[0].client.id,
+        name: withStats[0].client.name,
+        team: withStats[0].client.team,
+        goals: withStats[0].stats.goals,
+        assists: withStats[0].stats.assists,
+      }
+    : null;
+
+  const red = withStats.filter((x) => x.client.team === "red");
+  const blue = withStats.filter((x) => x.client.team === "blue");
+  const redAvgElo = red.length
+    ? red.reduce((sum, x) => sum + (getPlayerStoreEntryByClient(x.client).elo || 1000), 0) / red.length
+    : 1000;
+  const blueAvgElo = blue.length
+    ? blue.reduce((sum, x) => sum + (getPlayerStoreEntryByClient(x.client).elo || 1000), 0) / blue.length
+    : 1000;
+
+  for (const { client, stats } of withStats) {
+    const entry = getPlayerStoreEntryByClient(client);
+    entry.name = client.name;
+    entry.matches += 1;
+    entry.goals += stats.goals || 0;
+    entry.assists += stats.assists || 0;
+    const won = winnerTeam === client.team;
+    const draw = !winnerTeam;
+    if (draw) entry.draws += 1;
+    else if (won) entry.wins += 1;
+    else entry.losses += 1;
+    updateWeeklyQuests(entry, stats, won);
+    if (room.roomType === "ranked") {
+      const score = draw ? 0.5 : won ? 1 : 0;
+      const opponentAvg = client.team === "red" ? blueAvgElo : redAvgElo;
+      entry.elo = Math.max(600, (entry.elo || 1000) + calculateEloDelta(entry.elo || 1000, opponentAvg, score));
+    }
+    entry.updatedAt = Date.now();
+  }
+
+  store.matches.push({
+    id: `m-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+    at: Date.now(),
+    roomId: room.id,
+    roomName: room.name,
+    roomType: room.roomType,
+    winnerTeam,
+    scoreRed: room.scoreRed,
+    scoreBlue: room.scoreBlue,
+    time: room.gameTime,
+    mvp,
+  });
+  if (store.matches.length > 400) store.matches.shift();
+  saveStore(store);
+  return { mvp };
+}
+
+function handleGoalCelebration(room) {
+  room.goalScoredTimer--;
+  if (room.goalScoredTimer > 0) return false;
 
   let winner = null;
-  if (scoreRed >= WIN_SCORE) winner = "red";
-  else if (scoreBlue >= WIN_SCORE) winner = "blue";
+  if (room.scoreRed >= WIN_SCORE) winner = "red";
+  else if (room.scoreBlue >= WIN_SCORE) winner = "blue";
   if (winner) {
-    gameState = "ended";
-    broadcast({
+    room.gameState = "ended";
+    const { mvp } = completeMatchPersistence(room, winner);
+    metrics.inc("matchesCompletedTotal", 1);
+    broadcastRoom(room, {
       type: "winner",
       team: winner,
-      scoreRed,
-      scoreBlue,
-      time: gameTime,
+      scoreRed: room.scoreRed,
+      scoreBlue: room.scoreBlue,
+      time: room.gameTime,
+      roomType: room.roomType,
+      mvp,
     });
+    sendLobbyUpdate(room);
     return true;
   }
-  goalScoredState = null;
-  resetPositions();
-  kickoffPending = true;
-  kickoffTeam = nextKickoffTeam;
+  room.goalScoredState = null;
+  resetPositions(room);
+  room.kickoffPending = true;
+  room.kickoffTeam = room.nextKickoffTeam;
   return false;
 }
 
-function processKicks(activePlayers) {
+function processKicks(room, activePlayers) {
   const teamPlayers = { red: [], blue: [] };
   for (const entry of activePlayers) {
     if (entry.client.team === "red" || entry.client.team === "blue") {
@@ -444,7 +992,7 @@ function processKicks(activePlayers) {
     }
   }
   for (const { client } of activePlayers) {
-    if (kickoffPending && client.team !== kickoffTeam) {
+    if (room.kickoffPending && client.team !== room.kickoffTeam) {
       if (client.kickCooldown > 0) client.kickCooldown--;
       continue;
     }
@@ -458,30 +1006,34 @@ function processKicks(activePlayers) {
             : client.keys?.kick
               ? "kick"
               : null;
-      if (actionType && performBallAction(client, teamPlayers, actionType)) {
+      if (actionType && performBallAction(room, client, teamPlayers, actionType)) {
+        client.matchStats = client.matchStats || { goals: 0, assists: 0, touches: 0 };
+        client.matchStats.touches += 1;
         client.kickCooldown = actionType === "pass" ? 6 : actionType === "throughPass" ? 7 : 8;
-        if (kickoffPending && client.team === kickoffTeam) kickoffPending = false;
+        if (room.kickoffPending && client.team === room.kickoffTeam) {
+          room.kickoffPending = false;
+        }
       }
     }
     if (client.kickCooldown > 0) client.kickCooldown--;
   }
 }
 
-function applyMovement(activePlayers) {
+function applyMovement(room, activePlayers) {
   for (const { player } of activePlayers) {
     player.x += player.vx;
     player.y += player.vy;
   }
-  ball.vx *= gameSettings.ballDamping;
-  ball.vy *= gameSettings.ballDamping;
-  ball.x += ball.vx;
-  ball.y += ball.vy;
+  room.ball.vx *= room.gameSettings.ballDamping;
+  room.ball.vy *= room.gameSettings.ballDamping;
+  room.ball.x += room.ball.vx;
+  room.ball.y += room.ball.vy;
 }
 
-function resolveCollisions(activePlayers) {
+function resolveCollisions(room, activePlayers) {
   for (const { client, player } of activePlayers) {
-    if (kickoffPending && client.team !== kickoffTeam) continue;
-    circleCollision(player, ball);
+    if (room.kickoffPending && client.team !== room.kickoffTeam) continue;
+    circleCollision(player, room.ball);
   }
   for (let pass = 0; pass < 3; pass++) {
     for (let i = 0; i < activePlayers.length; i++) {
@@ -490,17 +1042,18 @@ function resolveCollisions(activePlayers) {
       }
     }
   }
-  if (kickoffPending && Math.hypot(ball.vx, ball.vy) > 0.05) kickoffPending = false;
-  for (const { player } of activePlayers) constrainObj(player);
-  constrainObj(ball);
+  if (room.kickoffPending && Math.hypot(room.ball.vx, room.ball.vy) > 0.05) {
+    room.kickoffPending = false;
+  }
+  for (const { player } of activePlayers) constrainObj(room, player);
+  constrainObj(room, room.ball);
 }
 
-function applyKickoffWaitingRules(activePlayers) {
-  if (!kickoffPending) return;
+function applyKickoffWaitingRules(room, activePlayers) {
+  if (!room.kickoffPending) return;
+  const field = getFieldMetrics(room);
   for (const { client, player } of activePlayers) {
-    if (client.team === kickoffTeam) continue;
-
-    // Non-kickoff team cannot cross the halfway line.
+    if (client.team === room.kickoffTeam) continue;
     if (client.team === "red" && player.x + player.r > CX) {
       player.x = CX - player.r;
       if (player.vx > 0) player.vx *= -0.3;
@@ -508,11 +1061,9 @@ function applyKickoffWaitingRules(activePlayers) {
       player.x = CX + player.r;
       if (player.vx < 0) player.vx *= -0.3;
     }
-
-    // Non-kickoff team cannot enter the center circle before play starts.
     const dx = player.x - CX;
     const dy = player.y - CY;
-    const minDist = KICKOFF_R + player.r;
+    const minDist = field.kickoffR + player.r;
     const dist = Math.hypot(dx, dy);
     if (dist < minDist) {
       const nx = dist > 0.001 ? dx / dist : (client.team === "red" ? -1 : 1);
@@ -528,192 +1079,165 @@ function applyKickoffWaitingRules(activePlayers) {
   }
 }
 
-function checkGoalScored() {
-  if (goalScoredState) return;
-  const goal = isGoal();
+function checkGoalScored(room) {
+  if (room.goalScoredState) return;
+  const goal = isGoal(room);
   if (!goal) return;
-  if (goal === "red") scoreRed++;
-  else scoreBlue++;
-  nextKickoffTeam = goal === "red" ? "blue" : "red";
-  goalScoredState = goal;
-  goalScoredTimer = GOAL_CELEBRATION_FRAMES;
-  broadcast({ type: "goal", team: goal, scoreRed, scoreBlue });
-}
-
-function gameUpdate() {
-  if (gameState !== "playing") return;
-  if (goalScoredState && handleGoalCelebration()) return;
-
-  gameTime += 1 / 60;
-  const activePlayers = getPlayersArray();
-
-  for (const { client } of activePlayers) handlePlayerInput(client);
-  processKicks(activePlayers);
-  applyMovement(activePlayers);
-  resolveCollisions(activePlayers);
-  applyKickoffWaitingRules(activePlayers);
-  checkGoalScored();
-}
-
-const _bcastPlayersPool = [];
-const _bcastBall = { x: 0, y: 0, vx: 0, vy: 0, r: 0 };
-const _bcastMsg = {
-  type: "state",
-  players: _bcastPlayersPool,
-  ball: _bcastBall,
-  scoreRed: 0,
-  scoreBlue: 0,
-  time: 0,
-  goalScoredState: null,
-  kickoffPending: false,
-  kickoffTeam: "",
-};
-
-let _pingBcastCounter = 0;
-const PING_BCAST_EVERY = 6;
-
-function broadcastState() {
-  if (gameState !== "playing") return;
-
-  let len = 0;
-  for (const [, c] of clients) {
-    if (c.team && c.player) {
-      if (len >= _bcastPlayersPool.length) {
-        _bcastPlayersPool.push({
-          id: 0, name: "", team: "", x: 0, y: 0, r: 0, kicking: false,
-        });
+  const scorerId = room.lastTouchId;
+  const assisterId = room.lastAssistTouchId;
+  if (goal === "red") room.scoreRed++;
+  else room.scoreBlue++;
+  if (scorerId != null) {
+    const scorer = clientsById.get(scorerId);
+    if (scorer?.team === goal) {
+      scorer.matchStats = scorer.matchStats || { goals: 0, assists: 0, touches: 0 };
+      scorer.matchStats.goals += 1;
+      if (assisterId != null && assisterId !== scorerId) {
+        const assister = clientsById.get(assisterId);
+        if (assister?.team === goal) {
+          assister.matchStats = assister.matchStats || { goals: 0, assists: 0, touches: 0 };
+          assister.matchStats.assists += 1;
+        }
       }
-      const entry = _bcastPlayersPool[len];
-      entry.id = c.id;
-      entry.name = c.name;
-      entry.team = c.team;
-      entry.x = Math.round(c.player.x * 10) / 10;
-      entry.y = Math.round(c.player.y * 10) / 10;
-      entry.r = c.player.r;
-      entry.kicking = c.player.kicking || false;
-      len++;
     }
   }
-  _bcastPlayersPool.length = len;
-
-  _bcastBall.x = Math.round(ball.x * 10) / 10;
-  _bcastBall.y = Math.round(ball.y * 10) / 10;
-  _bcastBall.vx = Math.round(ball.vx * 100) / 100;
-  _bcastBall.vy = Math.round(ball.vy * 100) / 100;
-  _bcastBall.r = ball.r;
-
-  _bcastMsg.scoreRed = scoreRed;
-  _bcastMsg.scoreBlue = scoreBlue;
-  _bcastMsg.time = gameTime;
-  _bcastMsg.goalScoredState = goalScoredState;
-  _bcastMsg.kickoffPending = kickoffPending;
-  _bcastMsg.kickoffTeam = kickoffTeam;
-
-  broadcast(_bcastMsg);
-
-  _pingBcastCounter++;
-  if (_pingBcastCounter >= PING_BCAST_EVERY) {
-    _pingBcastCounter = 0;
-    for (const [ws, c] of clients) {
-      if (ws.readyState !== 1 || !c.team) continue;
-      const p = c.pingMs ?? null;
-      const pr = Number.isFinite(c.pingRawMs) ? Math.round(c.pingRawMs) : null;
-      try {
-        ws.send(`{"type":"myPing","ping":${p},"pingRaw":${pr}}`);
-      } catch {}
-    }
-  }
-}
-
-// ============ LOBBY & NETWORKING ============
-
-function broadcast(msg) {
-  const data = JSON.stringify(msg);
-  for (const [ws, client] of clients) {
-    if (ws.readyState !== 1) continue;
-    if (ws.bufferedAmount > MAX_BUFFERED_AMOUNT_BYTES) {
-      ws.terminate();
-      continue;
-    }
-    try {
-      ws.send(data);
-    } catch {
-      if (client) clients.delete(ws);
-      ws.terminate();
-    }
-  }
-}
-
-function sendLobbyUpdate() {
-  const playersList = [];
-  for (const [, c] of clients) {
-    playersList.push({ id: c.id, name: c.name, team: c.team });
-  }
-  broadcast({
-    type: "lobby",
-    players: playersList,
-    hostId,
-    gameState,
-    settings: gameSettings,
+  room.nextKickoffTeam = goal === "red" ? "blue" : "red";
+  room.goalScoredState = goal;
+  room.goalScoredTimer = GOAL_CELEBRATION_FRAMES;
+  broadcastRoom(room, {
+    type: "goal",
+    team: goal,
+    scoreRed: room.scoreRed,
+    scoreBlue: room.scoreBlue,
+    scorerId,
   });
 }
 
-const TICK_MS = 1000 / 60;
-const BROADCAST_EVERY_N_TICKS = Math.max(1, Math.round(STATE_BROADCAST_MS / TICK_MS));
-const MAX_CATCHUP_STEPS = 4;
+function gameUpdate(room) {
+  if (room.gameState !== "playing") return;
+  if (room.goalScoredState && handleGoalCelebration(room)) return;
+  room.gameTime += 1 / 60;
+  const activePlayers = getPlayersArray(room);
+  for (const { client } of activePlayers) handlePlayerInput(room, client);
+  processKicks(room, activePlayers);
+  applyMovement(room, activePlayers);
+  resolveCollisions(room, activePlayers);
+  applyKickoffWaitingRules(room, activePlayers);
+  checkGoalScored(room);
+}
 
-function startGameLoop() {
-  gameState = "playing";
-  scoreRed = 0;
-  scoreBlue = 0;
-  gameTime = 0;
-  goalScoredState = null;
-  goalScoredTimer = 0;
-  kickoffPending = true;
-  kickoffTeam = "red";
-  nextKickoffTeam = "red";
+function broadcastState(room) {
+  if (room.gameState !== "playing") return;
+  let len = 0;
+  for (const client of getRoomClients(room)) {
+    if (client.team && client.player) {
+      if (len >= room.bcastPlayersPool.length) {
+        room.bcastPlayersPool.push({
+          id: 0,
+          name: "",
+          team: "",
+          x: 0,
+          y: 0,
+          r: 0,
+          kicking: false,
+        });
+      }
+      const entry = room.bcastPlayersPool[len];
+      entry.id = client.id;
+      entry.name = client.name;
+      entry.team = client.team;
+      entry.x = Math.round(client.player.x * 10) / 10;
+      entry.y = Math.round(client.player.y * 10) / 10;
+      entry.r = client.player.r;
+      entry.kicking = client.player.kicking || false;
+      len++;
+    }
+  }
+  room.bcastPlayersPool.length = len;
 
-  ball = { x: CX, y: CY, vx: 0, vy: 0, r: BALL_R, isBall: true };
+  room.bcastBall.x = Math.round(room.ball.x * 10) / 10;
+  room.bcastBall.y = Math.round(room.ball.y * 10) / 10;
+  room.bcastBall.vx = Math.round(room.ball.vx * 100) / 100;
+  room.bcastBall.vy = Math.round(room.ball.vy * 100) / 100;
+  room.bcastBall.r = room.ball.r;
 
-  for (const [, c] of clients) {
-    if (c.team) {
-      c.player = {
+  room.bcastMsg.scoreRed = room.scoreRed;
+  room.bcastMsg.scoreBlue = room.scoreBlue;
+  room.bcastMsg.time = room.gameTime;
+  room.bcastMsg.goalScoredState = room.goalScoredState;
+  room.bcastMsg.kickoffPending = room.kickoffPending;
+  room.bcastMsg.kickoffTeam = room.kickoffTeam;
+  broadcastRoom(room, room.bcastMsg);
+
+  room.pingBcastCounter++;
+  if (room.pingBcastCounter >= 6) {
+    room.pingBcastCounter = 0;
+    for (const client of getRoomClients(room)) {
+      if (!client.team) continue;
+      sendToClient(client, {
+        type: "myPing",
+        ping: client.pingMs ?? null,
+        pingRaw: Number.isFinite(client.pingRawMs) ? Math.round(client.pingRawMs) : null,
+      });
+    }
+  }
+}
+
+function startGameLoop(room) {
+  room.gameState = "playing";
+  room.scoreRed = 0;
+  room.scoreBlue = 0;
+  room.gameTime = 0;
+  room.goalScoredState = null;
+  room.goalScoredTimer = 0;
+  room.kickoffPending = true;
+  room.kickoffTeam = "red";
+  room.nextKickoffTeam = "red";
+  room.lastTouchId = null;
+  room.lastAssistTouchId = null;
+  room.ball = { x: CX, y: CY, vx: 0, vy: 0, r: BALL_R, isBall: true };
+
+  for (const client of getRoomClients(room)) {
+    if (client.team) {
+      client.player = {
         x: 0,
         y: 0,
         vx: 0,
         vy: 0,
-        r: PLAYER_R,
+        r: getPlayerRadius(room),
         kicking: false,
         isBall: false,
       };
-      c.kickCooldown = 0;
+      client.kickCooldown = 0;
+      client.matchStats = { goals: 0, assists: 0, touches: 0 };
+    } else {
+      client.player = null;
+      client.matchStats = { goals: 0, assists: 0, touches: 0 };
     }
   }
+  resetPositions(room);
+  broadcastRoom(room, { type: "gameStart" });
+  sendLobbyUpdate(room);
 
-  resetPositions();
-  broadcast({ type: "gameStart" });
-
-  stopGameLoop();
-  gameLoopRunning = true;
-
+  stopGameLoop(room);
+  room.gameLoopRunning = true;
   let lastHrNs = process.hrtime.bigint();
   let accumulator = 0;
   let tickCount = 0;
 
   function tick() {
-    if (!gameLoopRunning) return;
-
+    if (!room.gameLoopRunning) return;
     const nowNs = process.hrtime.bigint();
     const elapsedMs = Number(nowNs - lastHrNs) / 1e6;
     lastHrNs = nowNs;
     accumulator += elapsedMs;
 
     if (accumulator >= TICK_MS) {
-      gameUpdate();
+      gameUpdate(room);
       accumulator -= TICK_MS;
       tickCount++;
       if (tickCount % BROADCAST_EVERY_N_TICKS === 0) {
-        broadcastState();
+        broadcastState(room);
       }
     }
 
@@ -721,72 +1245,118 @@ function startGameLoop() {
       accumulator = 0;
     }
 
-    if (gameState === "playing" && gameLoopRunning) {
+    if (room.gameState === "playing" && room.gameLoopRunning) {
       if (accumulator >= TICK_MS) {
-        setImmediate(tick);
+        room.gameLoopTimer = setImmediate(tick);
       } else {
-        setTimeout(tick, Math.max(1, TICK_MS - accumulator));
+        room.gameLoopTimer = setTimeout(tick, Math.max(1, TICK_MS - accumulator));
       }
     }
   }
-
-  setTimeout(tick, TICK_MS);
+  room.gameLoopTimer = setTimeout(tick, TICK_MS);
 }
 
-function stopGameLoop() {
-  gameLoopRunning = false;
-}
-
-function isLobbyOrEnded() {
-  return gameState === "lobby" || gameState === "ended";
-}
+// ============ MESSAGE HANDLERS ============
 
 function handleJoin(client, msg) {
-  client.name = (msg.name || "Oyuncu").slice(0, 16);
-  sendLobbyUpdate();
+  client.name = sanitizeName(msg?.name, `Oyuncu ${client.id}`);
+  getPlayerStoreEntryByClient(client).name = client.name;
+  saveStore(store);
+  sendRoomList(client);
+  const room = getRoomByClient(client);
+  if (room) sendLobbyUpdate(room);
+}
+
+function handleListRooms(client) {
+  sendRoomList(client);
+}
+
+function handleCreateRoom(client, msg) {
+  const roomName = sanitizeRoomName(msg?.roomName, `Oda ${nextRoomId}`);
+  const password = sanitizePassword(msg?.password);
+  const room = createRoomState(roomName, password, msg?.roomType);
+  logger.info("room_created", { roomId: room.id, roomName: room.name, roomType: room.roomType });
+  joinRoom(client, room, password);
+}
+
+function handleJoinRoom(client, msg) {
+  const roomId = String(msg?.roomId ?? "");
+  const room = rooms.get(roomId);
+  const password = sanitizePassword(msg?.password);
+  joinRoom(client, room, password);
+}
+
+function handleLeaveRoom(client) {
+  if (!client.roomId) return;
+  leaveCurrentRoom(client, { sendRoomLeft: true });
 }
 
 function handleTeam(client, msg) {
+  const room = getRoomByClient(client);
+  if (!room) return;
   if (!["red", "blue"].includes(msg.team)) return;
-  if (gameState === "playing" && client.team) return;
-  const teamCount = [...clients.values()].filter(
-    (c) => c.team === msg.team,
-  ).length;
-  if (teamCount >= 4) return;
+  if (room.gameState === "playing" && client.team) return;
+  const teamCount = getRoomClients(room).filter((c) => c.team === msg.team).length;
+  if (teamCount >= MAX_TEAM_SIZE) return;
   client.team = msg.team;
-  if (gameState === "playing" && !client.player) {
+  if (room.gameState === "playing" && !client.player) {
     client.player = {
       x: 0,
       y: 0,
       vx: 0,
       vy: 0,
-      r: PLAYER_R,
+      r: getPlayerRadius(room),
       kicking: false,
       isBall: false,
     };
     client.kickCooldown = 0;
-    spawnPlayerForClient(client);
+    client.matchStats = { goals: 0, assists: 0, touches: 0 };
+    spawnPlayerForClient(room, client);
   }
-  sendLobbyUpdate();
+  sendLobbyUpdate(room);
+  broadcastRoomListAll();
 }
 
 function handleStart(client) {
-  if (client.id !== hostId || !isLobbyOrEnded()) return;
-  const hasRed = [...clients.values()].some((c) => c.team === "red");
-  const hasBlue = [...clients.values()].some((c) => c.team === "blue");
-  if (hasRed && hasBlue) startGameLoop();
+  const room = getRoomByClient(client);
+  if (!room) return;
+  ensureRoomHost(room);
+  if (client.id !== room.hostId || !isLobbyOrEnded(room)) return;
+  const roomClients = getRoomClients(room);
+  const hasRed = roomClients.some((c) => c.team === "red");
+  const hasBlue = roomClients.some((c) => c.team === "blue");
+  if (hasRed && hasBlue) startGameLoop(room);
 }
 
 function handleRestart(client) {
-  if (client.id !== hostId) return;
-  stopGameLoop();
-  gameState = "lobby";
-  for (const [, c] of clients) c.player = null;
-  sendLobbyUpdate();
+  const room = getRoomByClient(client);
+  if (!room) return;
+  ensureRoomHost(room);
+  if (client.id !== room.hostId) return;
+  stopGameLoop(room);
+  room.gameState = "lobby";
+  room.scoreRed = 0;
+  room.scoreBlue = 0;
+  room.goalScoredState = null;
+  room.goalScoredTimer = 0;
+  room.gameTime = 0;
+  room.kickoffPending = false;
+  room.kickoffTeam = "red";
+  room.nextKickoffTeam = "red";
+  room.lastTouchId = null;
+  room.lastAssistTouchId = null;
+  for (const c of getRoomClients(room)) {
+    c.player = null;
+    c.matchStats = { goals: 0, assists: 0, touches: 0 };
+  }
+  sendLobbyUpdate(room);
+  broadcastRoomListAll();
 }
 
 function handleInput(client, msg) {
-  if (gameState !== "playing" || !msg.keys) return;
+  const room = getRoomByClient(client);
+  if (!room || room.gameState !== "playing" || !msg.keys) return;
+  if (!client.team) return;
   const k = client.keys;
   k.up = !!msg.keys.up;
   k.down = !!msg.keys.down;
@@ -799,25 +1369,55 @@ function handleInput(client, msg) {
 }
 
 function handleSettings(client, msg) {
-  if (client.id !== hostId) return;
-  gameSettings = sanitizeSettings(msg.settings);
-  broadcast({ type: "settings", settings: gameSettings, hostId });
-  sendLobbyUpdate();
+  const room = getRoomByClient(client);
+  if (!room) return;
+  ensureRoomHost(room);
+  if (client.id !== room.hostId) return;
+  room.gameSettings = sanitizeSettings(msg.settings, room.gameSettings);
+  const nextR = getPlayerRadius(room);
+  for (const c of getRoomClients(room)) {
+    if (c.player) c.player.r = nextR;
+  }
+  constrainObj(room, room.ball);
+  for (const c of getRoomClients(room)) {
+    if (c.player) constrainObj(room, c.player);
+  }
+  broadcastRoom(room, { type: "settings", settings: room.gameSettings, hostId: room.hostId });
+  sendLobbyUpdate(room);
 }
 
 function handleResetSettings(client) {
-  if (client.id !== hostId) return;
-  gameSettings = { ...DEFAULT_GAME_SETTINGS };
-  broadcast({ type: "settings", settings: gameSettings, hostId });
-  sendLobbyUpdate();
+  const room = getRoomByClient(client);
+  if (!room) return;
+  ensureRoomHost(room);
+  if (client.id !== room.hostId) return;
+  room.gameSettings = { ...DEFAULT_GAME_SETTINGS };
+  const nextR = getPlayerRadius(room);
+  for (const c of getRoomClients(room)) {
+    if (c.player) c.player.r = nextR;
+  }
+  constrainObj(room, room.ball);
+  for (const c of getRoomClients(room)) {
+    if (c.player) constrainObj(room, c.player);
+  }
+  broadcastRoom(room, { type: "settings", settings: room.gameSettings, hostId: room.hostId });
+  sendLobbyUpdate(room);
 }
 
 function handleChat(client, msg) {
-  const text = String(msg?.text ?? "")
-    .trim()
-    .slice(0, 180);
+  const room = getRoomByClient(client);
+  if (!room) return;
+  if (isClientMutedInRoom(room, client.id)) return;
+  const now = Date.now();
+  client.chatTimestamps = (client.chatTimestamps || []).filter((ts) => now - ts < CHAT_FLOOD_WINDOW_MS);
+  if (client.chatTimestamps.length >= CHAT_FLOOD_LIMIT) {
+    sendToClient(client, { type: "roomError", message: "Sohbet limiti asildi. Biraz bekle." });
+    return;
+  }
+  client.chatTimestamps.push(now);
+  const text = sanitizeChatText(msg?.text);
   if (!text) return;
-  broadcast({
+  broadcastRoom(room, {
     type: "chat",
     fromId: client.id,
     fromName: client.name || `Oyuncu ${client.id}`,
@@ -826,8 +1426,86 @@ function handleChat(client, msg) {
   });
 }
 
+function handleQuickChat(client, msg) {
+  const room = getRoomByClient(client);
+  if (!room) return;
+  if (isClientMutedInRoom(room, client.id)) return;
+  const key = String(msg?.code || "");
+  const text = QUICK_CHAT_MAP[key];
+  if (!text) return;
+  broadcastRoom(room, {
+    type: "chat",
+    fromId: client.id,
+    fromName: client.name || `Oyuncu ${client.id}`,
+    text,
+    quick: true,
+    time: Date.now(),
+  });
+}
+
+function handleMutePlayer(client, msg) {
+  const room = getRoomByClient(client);
+  if (!room || !canModerateRoom(room, client)) return;
+  const playerId = Number(msg?.playerId);
+  if (!Number.isFinite(playerId) || playerId === client.id) return;
+  const muted = !!msg?.muted;
+  if (muted) room.mutedIds.add(playerId);
+  else room.mutedIds.delete(playerId);
+  sendLobbyUpdate(room);
+}
+
+function handleKickPlayer(client, msg) {
+  const room = getRoomByClient(client);
+  if (!room || !canModerateRoom(room, client)) return;
+  const playerId = Number(msg?.playerId);
+  if (!Number.isFinite(playerId) || playerId === client.id) return;
+  const target = clientsById.get(playerId);
+  if (!target || target.roomId !== room.id) return;
+  sendToClient(target, { type: "roomError", message: "Oda sahibi tarafindan odadan atildin." });
+  leaveCurrentRoom(target, { sendRoomLeft: true });
+}
+
+function handleRequestLeaderboard(client) {
+  const leaderboard = Object.values(store.players)
+    .sort((a, b) => (b.elo || 1000) - (a.elo || 1000))
+    .slice(0, 10);
+  sendToClient(client, {
+    type: "leaderboard",
+    season: store.season,
+    leaderboard,
+  });
+}
+
+function handleReconnect(client, msg) {
+  cleanupReconnectSessions();
+  const token = String(msg?.token || "");
+  const session = reconnectSessions.get(token);
+  if (!session || session.expiresAt < Date.now()) {
+    metrics.inc("reconnectFailuresTotal", 1);
+    sendToClient(client, { type: "reconnectResult", ok: false });
+    return;
+  }
+  reconnectSessions.delete(token);
+  client.name = sanitizeName(msg?.name || session.name, `Oyuncu ${client.id}`);
+  client.reconnectToken = token;
+  sendToClient(client, { type: "reconnectResult", ok: true, token });
+  if (session.roomId && rooms.has(session.roomId)) {
+    const room = rooms.get(session.roomId);
+    joinRoom(client, room, "", { skipPassword: true });
+    if (session.team === "red" || session.team === "blue") {
+      client.team = session.team;
+      sendLobbyUpdate(room);
+    }
+  }
+  metrics.inc("reconnectSuccessTotal", 1);
+}
+
 const messageHandlers = {
   join: handleJoin,
+  listRooms: handleListRooms,
+  createRoom: handleCreateRoom,
+  joinRoom: handleJoinRoom,
+  leaveRoom: handleLeaveRoom,
   team: handleTeam,
   start: handleStart,
   restart: handleRestart,
@@ -835,13 +1513,59 @@ const messageHandlers = {
   settings: handleSettings,
   resetSettings: handleResetSettings,
   chat: handleChat,
+  quickChat: handleQuickChat,
+  mutePlayer: handleMutePlayer,
+  kickPlayer: handleKickPlayer,
+  requestLeaderboard: handleRequestLeaderboard,
+  reconnect: handleReconnect,
 };
 
 function handleClientMessage(client, msg) {
-  if (!msg || typeof msg !== "object" || typeof msg.type !== "string") return;
+  if (!validateMessageShape(msg)) {
+    metrics.inc("wsRejectedMessagesTotal", 1);
+    return;
+  }
+  metrics.inc("wsMessagesTotal", 1);
   if (isRateLimited(client, msg.type)) return;
   const handler = messageHandlers[msg.type];
   if (handler) handler(client, msg);
+}
+
+function isRateLimited(client, type) {
+  const now = Date.now();
+  if (!client.rateLimitWindowStart || now - client.rateLimitWindowStart >= RATE_WINDOW_MS) {
+    client.rateLimitWindowStart = now;
+    client.rateLimitCounts = {};
+  }
+  const key = typeof type === "string" ? type : "default";
+  const limit = RATE_LIMIT_PER_WINDOW[key] ?? RATE_LIMIT_PER_WINDOW.default;
+  const nextCount = (client.rateLimitCounts[key] || 0) + 1;
+  client.rateLimitCounts[key] = nextCount;
+  return nextCount > limit;
+}
+
+function isPasswordAttemptsBlocked(client) {
+  const now = Date.now();
+  if (!client.passwordFailWindowStart || now - client.passwordFailWindowStart >= PASSWORD_FAIL_WINDOW_MS) {
+    client.passwordFailWindowStart = now;
+    client.passwordFailCount = 0;
+    return false;
+  }
+  return client.passwordFailCount >= PASSWORD_FAIL_LIMIT;
+}
+
+function registerFailedPasswordAttempt(client) {
+  const now = Date.now();
+  if (!client.passwordFailWindowStart || now - client.passwordFailWindowStart >= PASSWORD_FAIL_WINDOW_MS) {
+    client.passwordFailWindowStart = now;
+    client.passwordFailCount = 0;
+  }
+  client.passwordFailCount += 1;
+}
+
+function clearFailedPasswordAttempts(client) {
+  client.passwordFailWindowStart = 0;
+  client.passwordFailCount = 0;
 }
 
 function startPingLoop() {
@@ -870,28 +1594,47 @@ function startPingLoop() {
   }, PING_SCAN_INTERVAL_MS);
 }
 
-function isRateLimited(client, type) {
-  const now = Date.now();
-  if (!client.rateLimitWindowStart || now - client.rateLimitWindowStart >= RATE_WINDOW_MS) {
-    client.rateLimitWindowStart = now;
-    client.rateLimitCounts = {};
+function handleDisconnect(client) {
+  if (!client) return;
+  cleanupReconnectSessions();
+  if (client.reconnectToken) {
+    reconnectSessions.set(client.reconnectToken, {
+      token: client.reconnectToken,
+      name: client.name,
+      roomId: client.roomId,
+      team: client.team,
+      expiresAt: Date.now() + RECONNECT_TTL_MS,
+    });
   }
-  const key = typeof type === "string" ? type : "default";
-  const limit = RATE_LIMIT_PER_WINDOW[key] ?? RATE_LIMIT_PER_WINDOW.default;
-  const nextCount = (client.rateLimitCounts[key] || 0) + 1;
-  client.rateLimitCounts[key] = nextCount;
-  return nextCount > limit;
+  leaveCurrentRoom(client);
+  clients.delete(client.ws);
+  clientsById.delete(client.id);
+  metrics.inc("wsDisconnectsTotal", 1);
+  if (clients.size === 0 && pingInterval) {
+    clearInterval(pingInterval);
+    pingInterval = null;
+  }
 }
 
-wss.on("connection", (ws) => {
+wss.on("connection", (ws, req) => {
+  const origin = String(req?.headers?.origin || "");
+  if (ALLOWED_ORIGINS.length > 0 && origin && !ALLOWED_ORIGINS.includes(origin)) {
+    ws.close(1008, "Origin not allowed");
+    return;
+  }
   if (clients.size >= MAX_CONNECTIONS) {
     ws.close(1013, "Server busy");
     return;
   }
+
   const id = nextId++;
+  const now = Date.now();
+  const reconnectToken = createReconnectToken();
   const clientData = {
+    ws,
     id,
-    name: "Oyuncu " + id,
+    name: `Oyuncu ${id}`,
+    roomId: null,
     team: null,
     keys: {
       up: false,
@@ -907,39 +1650,40 @@ wss.on("connection", (ws) => {
     kickCooldown: 0,
     pingMs: null,
     pingRawMs: null,
-    pingBaselineMs: null,
-    lastPongAt: Date.now(),
+    lastPongAt: now,
     lastPingSentAt: 0,
     lastPingHrNs: null,
-    nextPingAt: Date.now() + Math.floor(Math.random() * Math.max(1, PING_INTERVAL_MS)),
+    nextPingAt: now + Math.floor(Math.random() * Math.max(1, PING_INTERVAL_MS)),
     awaitingPong: false,
-    rateLimitWindowStart: Date.now(),
+    rateLimitWindowStart: now,
     rateLimitCounts: {},
+    passwordFailWindowStart: 0,
+    passwordFailCount: 0,
+    reconnectToken,
+    chatTimestamps: [],
+    matchStats: { goals: 0, assists: 0, touches: 0 },
   };
+
   if (ws._socket) {
     ws._socket.setNoDelay(true);
     ws._socket.setKeepAlive(true, 2000);
   }
+
   clients.set(ws, clientData);
+  clientsById.set(id, clientData);
+  metrics.inc("wsConnectionsTotal", 1);
   startPingLoop();
 
-  if (!hostId) hostId = id;
-
-  ws.send(
-    JSON.stringify({
-      type: "welcome",
-      id,
-      hostId,
-      settings: gameSettings,
-      stateTickMs: STATE_BROADCAST_MS,
-    }),
-  );
-  sendLobbyUpdate();
+  sendToClient(clientData, {
+    type: "welcome",
+    id,
+    reconnectToken,
+    stateTickMs: STATE_BROADCAST_MS,
+  });
+  sendRoomList(clientData);
 
   ws.on("message", (raw) => {
-    const rawSize = Buffer.isBuffer(raw)
-      ? raw.length
-      : Buffer.byteLength(String(raw), "utf8");
+    const rawSize = Buffer.isBuffer(raw) ? raw.length : Buffer.byteLength(String(raw), "utf8");
     if (rawSize > MAX_WS_PAYLOAD_BYTES) {
       ws.close(1009, "Payload too large");
       return;
@@ -961,7 +1705,6 @@ wss.on("connection", (ws) => {
     client.lastPongAt = Date.now();
     if (!client.awaitingPong) return;
     client.awaitingPong = false;
-
     let rawPing;
     if (typeof client.lastPingHrNs === "bigint") {
       rawPing = Number(process.hrtime.bigint() - client.lastPingHrNs) / 1e6;
@@ -970,50 +1713,36 @@ wss.on("connection", (ws) => {
     }
     rawPing = Math.max(0, Math.round(rawPing));
     client.pingRawMs = rawPing;
-
     if (!Number.isFinite(client.pingMs)) {
       client.pingMs = rawPing;
     } else {
-      client.pingMs = Math.max(0, Math.round(
-        client.pingMs + (rawPing - client.pingMs) * PING_SMOOTHING_ALPHA,
-      ));
+      client.pingMs = Math.max(
+        0,
+        Math.round(client.pingMs + (rawPing - client.pingMs) * PING_SMOOTHING_ALPHA),
+      );
     }
   });
 
   ws.on("close", () => {
     const client = clients.get(ws);
-    clients.delete(ws);
-
-    if (client && client.id === hostId) {
-      const remaining = [...clients.values()];
-      hostId = remaining.length > 0 ? remaining[0].id : null;
-    }
-
-    if (clients.size === 0) {
-      stopGameLoop();
-      gameState = "lobby";
-      scoreRed = 0;
-      scoreBlue = 0;
-      if (pingInterval) {
-        clearInterval(pingInterval);
-        pingInterval = null;
-      }
-    }
-
-    sendLobbyUpdate();
+    handleDisconnect(client);
   });
 });
 
-let shuttingDown = false;
 function shutdown(signal) {
   if (shuttingDown) return;
   shuttingDown = true;
   console.log(`${signal} alindi, sunucu kapatiliyor...`);
-  stopGameLoop();
+  logger.warn("server_shutdown", { signal });
+
+  for (const room of rooms.values()) stopGameLoop(room);
+  rooms.clear();
+
   if (pingInterval) {
     clearInterval(pingInterval);
     pingInterval = null;
   }
+
   for (const [ws] of clients) {
     try {
       ws.close(1001, "Server shutting down");
@@ -1021,14 +1750,21 @@ function shutdown(signal) {
       ws.terminate();
     }
   }
-  server.close(() => {
-    process.exit(0);
-  });
+  clients.clear();
+  clientsById.clear();
+
+  server.close(() => process.exit(0));
   setTimeout(() => process.exit(1), 4000).unref();
 }
 
 process.on("SIGINT", () => shutdown("SIGINT"));
 process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("uncaughtException", (err) => {
+  logger.error("uncaught_exception", { error: err?.message, stack: err?.stack });
+});
+process.on("unhandledRejection", (reason) => {
+  logger.error("unhandled_rejection", { reason: String(reason) });
+});
 
 // ============ START SERVER ============
 
@@ -1055,4 +1791,8 @@ server.listen(PORT, "0.0.0.0", () => {
   console.log("  LAN adresini paylasarak katilabilir.");
   console.log("========================================");
   console.log("");
+  logger.info("server_started", {
+    port: PORT,
+    allowedOrigins: ALLOWED_ORIGINS.length ? ALLOWED_ORIGINS : ["*"],
+  });
 });

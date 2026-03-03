@@ -91,9 +91,130 @@
         transform: scale(1.05);
       }
 
+      #room-browser {
+        display: none;
+        width: min(760px, 96vw);
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        border-radius: 12px;
+        padding: 14px;
+        background: rgba(255, 255, 255, 0.03);
+      }
+      #room-browser.show {
+        display: block;
+      }
+      #room-browser .room-browser-top {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 10px;
+        margin-bottom: 10px;
+      }
+      #room-browser .room-browser-top h3 {
+        color: #dce4ff;
+        font-size: 14px;
+      }
+      #room-refresh-btn {
+        border: 1px solid rgba(255, 255, 255, 0.2);
+        background: rgba(255, 255, 255, 0.06);
+        color: #fff;
+        border-radius: 8px;
+        padding: 6px 10px;
+        font-size: 12px;
+        cursor: pointer;
+      }
+      #room-list {
+        list-style: none;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        max-height: 220px;
+        overflow-y: auto;
+        margin-bottom: 12px;
+      }
+      .room-item {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 8px;
+        padding: 9px 10px;
+        border-radius: 8px;
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        background: rgba(255, 255, 255, 0.03);
+      }
+      .room-item .room-meta {
+        color: #bec9e8;
+        font-size: 12px;
+      }
+      .room-join-btn {
+        border: 0;
+        background: #5064d9;
+        color: #fff;
+        border-radius: 7px;
+        padding: 6px 9px;
+        font-size: 12px;
+        font-weight: 700;
+        cursor: pointer;
+      }
+      #create-room-form {
+        display: grid;
+        grid-template-columns: 1fr 1fr 120px auto;
+        gap: 8px;
+      }
+      #create-room-form input {
+        background: rgba(255, 255, 255, 0.08);
+        border: 1px solid rgba(255, 255, 255, 0.15);
+        color: #fff;
+        padding: 8px 10px;
+        border-radius: 8px;
+        font-size: 13px;
+        outline: none;
+      }
+      #create-room-form select {
+        background: rgba(255, 255, 255, 0.08);
+        border: 1px solid rgba(255, 255, 255, 0.15);
+        color: #fff;
+        padding: 8px 10px;
+        border-radius: 8px;
+        font-size: 13px;
+        outline: none;
+      }
+      #create-room-btn {
+        border: 0;
+        background: linear-gradient(135deg, #27ae60, #2ecc71);
+        color: #fff;
+        border-radius: 8px;
+        padding: 8px 12px;
+        font-size: 13px;
+        font-weight: 700;
+        cursor: pointer;
+      }
+      #connection-status {
+        color: #cbd5e1;
+        font-size: 12px;
+      }
+      #leaderboard-box {
+        margin-top: 10px;
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 8px;
+        padding: 8px;
+      }
+      #leaderboard-box h4 {
+        font-size: 12px;
+        color: #dce4ff;
+        margin-bottom: 6px;
+      }
+      #leaderboard-list {
+        list-style: none;
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        font-size: 12px;
+        color: #cbd5e1;
+      }
+
       #lobby-content {
         display: none;
-        width: 500px;
+        width: min(760px, 96vw);
       }
       #lobby-content.show {
         display: flex;
@@ -109,10 +230,20 @@
       .my-name-display b {
         color: #fff;
       }
+      #leave-room-btn {
+        margin-left: 8px;
+        border: 1px solid rgba(255, 255, 255, 0.2);
+        background: rgba(255, 255, 255, 0.08);
+        color: #fff;
+        border-radius: 7px;
+        padding: 4px 8px;
+        font-size: 11px;
+        cursor: pointer;
+      }
 
       #teams-container {
         display: flex;
-        gap: 20px;
+        gap: 14px;
         width: 100%;
       }
 
@@ -128,6 +259,9 @@
       }
       .team-box.blue-box {
         border: 2px solid #3498db44;
+      }
+      .team-box.spectator-box {
+        border: 2px solid #9ca3af44;
       }
 
       .team-box h3 {
@@ -145,6 +279,9 @@
       .team-box.blue-box h3 {
         color: #3498db;
       }
+      .team-box.spectator-box h3 {
+        color: #cbd5e1;
+      }
 
       .team-player-list {
         list-style: none;
@@ -158,6 +295,10 @@
       }
       .team-player-list li.me {
         font-weight: 700;
+      }
+      .team-player-list li.empty {
+        color: #7c8799;
+        font-style: italic;
       }
 
       .team-join-btn {
@@ -187,12 +328,6 @@
         opacity: 0.3;
         cursor: not-allowed;
         transform: none;
-      }
-
-      .spectators {
-        color: #666;
-        font-size: 12px;
-        text-align: center;
       }
 
       #start-btn {
@@ -295,6 +430,15 @@
         font-size: 12px;
         text-align: center;
         line-height: 1.6;
+      }
+      #overlay-return-hint {
+        display: none;
+        color: #cfd8ea;
+        font-size: 12px;
+        letter-spacing: 0.3px;
+      }
+      #overlay-return-hint.show {
+        display: block;
       }
 
       /* ========== GAME ========== */
@@ -823,6 +967,40 @@
       #chat-send-btn:hover {
         background: #5c70e7;
       }
+      #in-game-quick-settings {
+        position: absolute;
+        right: 14px;
+        top: 56px;
+        z-index: 6;
+        width: 220px;
+        border: 1px solid rgba(255, 255, 255, 0.16);
+        background: rgba(9, 12, 20, 0.75);
+        border-radius: 10px;
+        padding: 8px;
+        backdrop-filter: blur(6px);
+      }
+      #in-game-quick-settings h4 {
+        font-size: 12px;
+        color: #dce4ff;
+        margin-bottom: 6px;
+      }
+      #in-game-quick-settings .setting-row {
+        margin-bottom: 6px;
+      }
+      #in-game-quick-settings .setting-row label {
+        display: block;
+        font-size: 11px;
+        color: #cbd5e1;
+        margin-bottom: 2px;
+      }
+      #in-game-quick-settings .setting-row input {
+        width: 100%;
+      }
+      #in-game-quick-settings .setting-val {
+        float: right;
+        font-size: 11px;
+        color: #f1f5f9;
+      }
 
       @media (max-width: 900px), (pointer: coarse) {
         body.touch-device #controls-info {
@@ -894,8 +1072,49 @@
         <button id="name-btn">Katıl</button>
       </div>
 
+      <div id="room-browser">
+        <div class="room-browser-top">
+          <h3>Oda Listesi</h3>
+          <div>
+            <span id="connection-status">Bağlanıyor...</span>
+            <button id="room-refresh-btn" type="button">Yenile</button>
+          </div>
+        </div>
+        <ul id="room-list"></ul>
+        <form id="create-room-form">
+          <input
+            id="create-room-name"
+            type="text"
+            maxlength="28"
+            placeholder="Yeni oda adı"
+            autocomplete="off"
+          />
+          <input
+            id="create-room-password"
+            type="password"
+            maxlength="64"
+            placeholder="Şifre (opsiyonel)"
+            autocomplete="off"
+          />
+          <select id="create-room-type">
+            <option value="casual">Casual</option>
+            <option value="ranked">Ranked</option>
+          </select>
+          <button id="create-room-btn" type="submit">Oluştur</button>
+        </form>
+        <div id="leaderboard-box">
+          <h4>Sezon Liderlik</h4>
+          <ul id="leaderboard-list"></ul>
+        </div>
+      </div>
+
       <div id="lobby-content">
         <p class="my-name-display">Hoşgeldin, <b id="my-name-label"></b></p>
+        <p class="my-name-display">
+          Oda: <b id="room-name-label">-</b>
+          <button id="leave-room-btn" type="button">Odadan Ayrıl</button>
+        </p>
+        <p id="overlay-return-hint">Esc ile maça dön</p>
 
         <div id="teams-container">
           <div class="team-box red-box">
@@ -911,6 +1130,10 @@
               Kırmızıya Katıl
             </button>
           </div>
+          <div class="team-box spectator-box">
+            <h3>İzleyiciler</h3>
+            <ul class="team-player-list" id="spectators-list"></ul>
+          </div>
           <div class="team-box blue-box">
             <h3>
               <span
@@ -925,8 +1148,6 @@
             </button>
           </div>
         </div>
-
-        <p class="spectators" id="spectators-text"></p>
 
         <button id="start-btn">Maçı Başlat</button>
 
@@ -1020,6 +1241,28 @@
             />
             <span class="setting-val" data-setting-value="ballDamping"></span>
           </div>
+          <div class="setting-row">
+            <label>Oyuncu Boyutu</label>
+            <input
+              type="range"
+              min="0.7"
+              max="1.35"
+              step="0.01"
+              data-setting="playerSizeScale"
+            />
+            <span class="setting-val" data-setting-value="playerSizeScale"></span>
+          </div>
+          <div class="setting-row">
+            <label>Saha Ölçeği</label>
+            <input
+              type="range"
+              min="0.8"
+              max="1.25"
+              step="0.01"
+              data-setting="fieldScale"
+            />
+            <span class="setting-val" data-setting-value="fieldScale"></span>
+          </div>
           <button id="reset-settings-btn" type="button">
             Varsayılanlara Dön
           </button>
@@ -1053,6 +1296,23 @@
         </div>
       </div>
       <canvas id="gameCanvas"></canvas>
+      <div id="in-game-quick-settings">
+        <h4>Hızlı Ayarlar</h4>
+        <div class="setting-row">
+          <label>
+            Oyuncu Boyutu
+            <span class="setting-val" id="quick-player-size-val">1.00</span>
+          </label>
+          <input id="quick-player-size" type="range" min="0.7" max="1.35" step="0.01" />
+        </div>
+        <div class="setting-row">
+          <label>
+            Saha Ölçeği
+            <span class="setting-val" id="quick-field-scale-val">1.00</span>
+          </label>
+          <input id="quick-field-scale" type="range" min="0.8" max="1.25" step="0.01" />
+        </div>
+      </div>
       <div id="controls-info">
         <div class="ctrl-group">
           <span
@@ -1134,13 +1394,26 @@
       // ============ CONNECTION ============
 
       const wsProtocol = location.protocol === "https:" ? "wss:" : "ws:";
-      const ws = new WebSocket(`${wsProtocol}//${location.host}`);
+      let ws = null;
       let myId = null;
       let currentHostId = null;
       let myName = "";
+      let currentRoomId = null;
+      let currentRoomName = "";
+      let currentRoomType = "casual";
       let myTeam = null;
       let currentGameState = "lobby";
+      let isLobbyOverlayOpen = false;
+      let availableRooms = [];
+      let mutedIds = new Set();
+      const reconnectStorageKey = "hexamy-reconnect-token-v1";
+      let reconnectToken = localStorage.getItem(reconnectStorageKey) || "";
+      let reconnectAttempts = 0;
+      let reconnectTimerId = 0;
+      let sentReconnect = false;
       const netStatsEl = document.getElementById("net-stats");
+      const connectionStatusEl = document.getElementById("connection-status");
+      const leaderboardListEl = document.getElementById("leaderboard-list");
       const fpsValueEl = document.getElementById("fps-value");
       const chatMessagesEl = document.getElementById("chat-messages");
       const chatFormEl = document.getElementById("chat-form");
@@ -1148,6 +1421,10 @@
       const adminSettingsEl = document.getElementById("admin-settings");
       const settingsRoleNoteEl = document.getElementById("settings-role-note");
       const resetSettingsBtn = document.getElementById("reset-settings-btn");
+      const quickPlayerSizeEl = document.getElementById("quick-player-size");
+      const quickFieldScaleEl = document.getElementById("quick-field-scale");
+      const quickPlayerSizeValEl = document.getElementById("quick-player-size-val");
+      const quickFieldScaleValEl = document.getElementById("quick-field-scale-val");
       const mobileControlsEl = document.getElementById("mobile-controls");
       const mobileJoystickEl = document.getElementById("mobile-joystick");
       const mobileJoystickKnobEl = document.getElementById("mobile-joystick-knob");
@@ -1157,6 +1434,17 @@
       const controlsSettingsCloseEl = document.getElementById("controls-settings-close");
       const controlsBindStatusEl = document.getElementById("controls-bind-status");
       const bindButtons = Array.from(document.querySelectorAll(".bind-btn"));
+      const nameFormEl = document.getElementById("name-form");
+      const lobbyContentEl = document.getElementById("lobby-content");
+      const roomBrowserEl = document.getElementById("room-browser");
+      const roomListEl = document.getElementById("room-list");
+      const roomRefreshBtnEl = document.getElementById("room-refresh-btn");
+      const createRoomFormEl = document.getElementById("create-room-form");
+      const createRoomNameEl = document.getElementById("create-room-name");
+      const createRoomPasswordEl = document.getElementById("create-room-password");
+      const createRoomTypeEl = document.getElementById("create-room-type");
+      const roomNameLabelEl = document.getElementById("room-name-label");
+      const leaveRoomBtnEl = document.getElementById("leave-room-btn");
       const keybindLobbyPassEl = document.getElementById("keybind-pass-lobby");
       const keybindLobbyThroughEl = document.getElementById("keybind-through-lobby");
       const keybindLobbyShootEl = document.getElementById("keybind-shoot-lobby");
@@ -1179,6 +1467,8 @@
         kickStrength: 3.84,
         kickRangeBonus: 4,
         ballDamping: 0.99,
+        playerSizeScale: 1,
+        fieldScale: 1,
       };
       const KEYBINDS_STORAGE_KEY = "hexamy-keybinds-v1";
       const defaultKeyBinds = { pass: "KeyJ", throughPass: "KeyK", shoot: "KeyL" };
@@ -1196,48 +1486,104 @@
       let sendSettingsTimer = null;
       let awaitingBindAction = null;
       let keyBinds = loadKeyBinds();
+      function setConnectionStatus(text) {
+        if (connectionStatusEl) connectionStatusEl.textContent = text;
+      }
 
-      ws.onopen = () => console.log("Sunucuya bağlandı");
-      ws.onclose = () => {
-        alert("Sunucu bağlantısı kesildi!");
-        location.reload();
-      };
+      function scheduleReconnect() {
+        if (reconnectTimerId) return;
+        reconnectAttempts += 1;
+        const waitMs = Math.min(12000, 400 * 2 ** Math.min(6, reconnectAttempts - 1));
+        setConnectionStatus(`Bağlantı koptu. ${Math.round(waitMs / 1000)} sn sonra tekrar denenecek.`);
+        reconnectTimerId = window.setTimeout(() => {
+          reconnectTimerId = 0;
+          connectWs();
+        }, waitMs);
+      }
 
-      ws.onmessage = (e) => {
-        const msg = JSON.parse(e.data);
-        switch (msg.type) {
-          case "welcome":
-            onWelcome(msg);
-            break;
-          case "lobby":
-            onLobbyUpdate(msg);
-            break;
-          case "settings":
-            onSettingsUpdate(msg);
-            break;
-          case "gameStart":
-            onGameStart();
-            break;
-          case "state":
-            onGameState(msg);
-            break;
-          case "goal":
-            onGoal(msg);
-            break;
-          case "winner":
-            onWinner(msg);
-            break;
-          case "chat":
-            onChatMessage(msg);
-            break;
-          case "myPing":
-            onMyPing(msg);
-            break;
-        }
-      };
+      function connectWs() {
+        if (ws && (ws.readyState === 0 || ws.readyState === 1)) return;
+        setConnectionStatus("Sunucuya bağlanıyor...");
+        ws = new WebSocket(`${wsProtocol}//${location.host}`);
+        sentReconnect = false;
+
+        ws.onopen = () => {
+          reconnectAttempts = 0;
+          setConnectionStatus("Bağlı");
+          if (reconnectToken && !sentReconnect) {
+            sentReconnect = true;
+            send({ type: "reconnect", token: reconnectToken, name: myName });
+          } else if (myName) {
+            send({ type: "join", name: myName });
+          }
+          send({ type: "requestLeaderboard" });
+        };
+
+        ws.onclose = () => {
+          scheduleReconnect();
+        };
+
+        ws.onmessage = (e) => {
+          let msg = null;
+          try {
+            msg = JSON.parse(e.data);
+          } catch {
+            return;
+          }
+          switch (msg.type) {
+            case "welcome":
+              onWelcome(msg);
+              break;
+            case "reconnectResult":
+              onReconnectResult(msg);
+              break;
+            case "roomList":
+              onRoomList(msg);
+              break;
+            case "roomJoined":
+              onRoomJoined(msg);
+              break;
+            case "roomLeft":
+              onRoomLeft();
+              break;
+            case "roomError":
+              onRoomError(msg);
+              break;
+            case "lobby":
+              onLobbyUpdate(msg);
+              break;
+            case "settings":
+              onSettingsUpdate(msg);
+              break;
+            case "gameStart":
+              onGameStart();
+              break;
+            case "state":
+              onGameState(msg);
+              break;
+            case "goal":
+              onGoal(msg);
+              break;
+            case "winner":
+              onWinner(msg);
+              break;
+            case "chat":
+              onChatMessage(msg);
+              break;
+            case "myPing":
+              onMyPing(msg);
+              break;
+            case "leaderboard":
+              onLeaderboard(msg);
+              break;
+          }
+        };
+      }
+
+      connectWs();
 
       function send(msg) {
-        if (ws.readyState === 1) ws.send(JSON.stringify(msg));
+        if (ws && ws.readyState === 1) ws.send(JSON.stringify(msg));
       }
 
       function isTextEntryFocused() {
@@ -1383,18 +1729,241 @@
 
       function onWelcome(msg) {
         myId = msg.id;
-        currentHostId = msg.hostId;
+        if (msg?.reconnectToken) {
+          reconnectToken = String(msg.reconnectToken);
+          localStorage.setItem(reconnectStorageKey, reconnectToken);
+        }
         if (Number.isFinite(msg.stateTickMs)) {
           serverTickMs = Math.max(12, Number(msg.stateTickMs));
         }
-        if (msg.settings) applySettings(msg.settings);
         refreshSettingsUI();
+        if (myName && !sentReconnect) send({ type: "join", name: myName });
+        send({ type: "listRooms" });
+      }
+
+      function onReconnectResult(msg) {
+        if (msg?.ok) {
+          if (msg?.token) {
+            reconnectToken = String(msg.token);
+            localStorage.setItem(reconnectStorageKey, reconnectToken);
+          }
+          setConnectionStatus("Yeniden bağlandı");
+          send({ type: "listRooms" });
+          return;
+        }
+        if (myName) send({ type: "join", name: myName });
+        send({ type: "listRooms" });
+      }
+
+      function onLeaderboard(msg) {
+        if (!leaderboardListEl) return;
+        leaderboardListEl.innerHTML = "";
+        const list = Array.isArray(msg?.leaderboard) ? msg.leaderboard : [];
+        if (!list.length) {
+          const item = document.createElement("li");
+          item.textContent = "Henüz sıralama verisi yok.";
+          leaderboardListEl.appendChild(item);
+          return;
+        }
+        for (const row of list.slice(0, 8)) {
+          const item = document.createElement("li");
+          const elo = Math.round(Number(row.elo || 1000));
+          item.textContent = `${row.name || "Oyuncu"} · ELO ${elo} · W:${row.wins || 0}`;
+          leaderboardListEl.appendChild(item);
+        }
       }
 
       document.getElementById("name-btn").addEventListener("click", joinLobby);
       document.getElementById("name-input").addEventListener("keydown", (e) => {
         if (e.key === "Enter") joinLobby();
       });
+      roomRefreshBtnEl?.addEventListener("click", () => {
+        send({ type: "listRooms" });
+      });
+      createRoomFormEl?.addEventListener("submit", (e) => {
+        e.preventDefault();
+        if (!myName) return;
+        const roomName = createRoomNameEl.value.trim();
+        const password = createRoomPasswordEl.value;
+        const roomType = createRoomTypeEl?.value === "ranked" ? "ranked" : "casual";
+        send({ type: "createRoom", roomName, password, roomType });
+        createRoomPasswordEl.value = "";
+      });
+      leaveRoomBtnEl?.addEventListener("click", () => {
+        send({ type: "leaveRoom" });
+      });
+
+      function formatRoomMeta(room) {
+        const lock = room.hasPassword ? "🔒" : "🔓";
+        const state = room.gameState === "playing" ? "Maçta" : "Lobide";
+        const mode = room.roomType === "ranked" ? "Ranked" : "Casual";
+        return `${lock} ${room.totalCount} kişi · ${room.redCount}R/${room.blueCount}B/${room.spectatorCount}İ · ${state} · ${mode}`;
+      }
+
+      function onRoomList(msg) {
+        availableRooms = Array.isArray(msg.rooms) ? msg.rooms : [];
+        renderRoomList();
+      }
+
+      function onRoomJoined(msg) {
+        if (!msg?.room) return;
+        currentRoomId = String(msg.room.roomId);
+        currentRoomName = msg.room.name || `Oda ${currentRoomId}`;
+        currentRoomType = msg.room.roomType || "casual";
+        roomNameLabelEl.textContent = `${currentRoomName} (${currentRoomType})`;
+        currentHostId = msg.room.hostId ?? null;
+        applyLobbyAndGameVisibility();
+      }
+
+      function onRoomLeft() {
+        currentRoomId = null;
+        currentRoomName = "";
+        currentHostId = null;
+        currentRoomType = "casual";
+        myTeam = null;
+        currentGameState = "lobby";
+        roomNameLabelEl.textContent = "-";
+        applyLobbyAndGameVisibility();
+        send({ type: "listRooms" });
+      }
+
+      function onRoomError(msg) {
+        alert(msg?.message || "Oda işlemi başarısız oldu.");
+      }
+
+      function renderRoomList() {
+        roomListEl.innerHTML = "";
+        if (!availableRooms.length) {
+          const li = document.createElement("li");
+          li.className = "room-item";
+          li.textContent = "Henüz oda yok. İlk odayı sen oluştur.";
+          roomListEl.appendChild(li);
+          return;
+        }
+        for (const room of availableRooms) {
+          const li = document.createElement("li");
+          li.className = "room-item";
+          const left = document.createElement("div");
+          left.innerHTML = `<div><b>${escapeHtml(room.name)}</b></div><div class="room-meta">${escapeHtml(formatRoomMeta(room))}</div>`;
+          const joinBtn = document.createElement("button");
+          joinBtn.className = "room-join-btn";
+          joinBtn.type = "button";
+          joinBtn.textContent = "Katıl";
+          joinBtn.addEventListener("click", () => {
+            let password = "";
+            if (room.hasPassword) {
+              password = prompt(`"${room.name}" odası şifreli. Şifreyi gir:`) || "";
+            }
+            send({ type: "joinRoom", roomId: room.roomId, password });
+          });
+          li.append(left, joinBtn);
+          roomListEl.appendChild(li);
+        }
+      }
+
+      function renderPlayerList(targetEl, players, emptyText) {
+        targetEl.innerHTML = "";
+        if (!players.length) {
+          const emptyItem = document.createElement("li");
+          emptyItem.classList.add("empty");
+          emptyItem.textContent = emptyText;
+          targetEl.appendChild(emptyItem);
+          return;
+        }
+        for (const player of players) {
+          const li = document.createElement("li");
+          li.textContent = player.name + (player.isHost ? " ★" : "") + (player.isMuted ? " (sessiz)" : "");
+          if (player.isMe) li.classList.add("me");
+          if (isMeHost() && !player.isMe) {
+            const muteBtn = document.createElement("button");
+            muteBtn.type = "button";
+            muteBtn.textContent = player.isMuted ? "Unmute" : "Mute";
+            muteBtn.style.marginLeft = "6px";
+            muteBtn.addEventListener("click", () => {
+              send({ type: "mutePlayer", playerId: player.id, muted: !player.isMuted });
+            });
+            const kickBtn = document.createElement("button");
+            kickBtn.type = "button";
+            kickBtn.textContent = "Kick";
+            kickBtn.style.marginLeft = "4px";
+            kickBtn.addEventListener("click", () => {
+              send({ type: "kickPlayer", playerId: player.id });
+            });
+            li.append(muteBtn, kickBtn);
+          }
+          targetEl.appendChild(li);
+        }
+      }
+
+      function renderLobbyColumns(players) {
+        const redPlayers = [];
+        const bluePlayers = [];
+        const spectatorPlayers = [];
+        myTeam = null;
+
+        for (const p of players) {
+          if (p.id === myId) myTeam = p.team;
+          const mappedPlayer = {
+            id: p.id,
+            name: p.name,
+            isMe: p.id === myId,
+            isHost: p.id === currentHostId,
+            isMuted: mutedIds.has(p.id),
+          };
+          if (p.team === "red") redPlayers.push(mappedPlayer);
+          else if (p.team === "blue") bluePlayers.push(mappedPlayer);
+          else spectatorPlayers.push(mappedPlayer);
+        }
+
+        renderPlayerList(document.getElementById("red-list"), redPlayers, "Oyuncu yok");
+        renderPlayerList(document.getElementById("blue-list"), bluePlayers, "Oyuncu yok");
+        renderPlayerList(
+          document.getElementById("spectators-list"),
+          spectatorPlayers,
+          "İzleyici yok",
+        );
+        return {
+          redCount: redPlayers.length,
+          blueCount: bluePlayers.length,
+        };
+      }
+
+      function applyLobbyAndGameVisibility() {
+        const lobbyEl = document.getElementById("lobby");
+        const gameContainerEl = document.getElementById("game-container");
+        const quickSettingsEl = document.getElementById("in-game-quick-settings");
+        const winnerOverlayEl = document.getElementById("winner-overlay");
+        const overlayHintEl = document.getElementById("overlay-return-hint");
+        const hasJoined = !!myName;
+        const hasRoom = !!currentRoomId;
+        nameFormEl.style.display = !hasJoined ? "flex" : "none";
+        roomBrowserEl.classList.toggle("show", hasJoined && !hasRoom);
+        lobbyContentEl.classList.toggle("show", hasJoined && hasRoom);
+        const isPlayingAsPlayer = currentGameState === "playing" && !!myTeam;
+        if (isPlayingAsPlayer) {
+          lobbyEl.classList.toggle("hidden", !isLobbyOverlayOpen);
+          gameContainerEl.classList.toggle("show", !isLobbyOverlayOpen);
+          if (isLobbyOverlayOpen) winnerOverlayEl.classList.remove("show");
+          overlayHintEl.classList.toggle("show", isLobbyOverlayOpen);
+          netStatsEl.style.display = isLobbyOverlayOpen ? "none" : "block";
+          if (quickSettingsEl) quickSettingsEl.style.display = isLobbyOverlayOpen ? "none" : "block";
+          return;
+        }
+        overlayHintEl.classList.remove("show");
+        lobbyEl.classList.remove("hidden");
+        gameContainerEl.classList.remove("show");
+        winnerOverlayEl.classList.remove("show");
+        netStatsEl.style.display = "none";
+        if (quickSettingsEl) quickSettingsEl.style.display = currentGameState === "playing" ? "block" : "none";
+      }
+
+      function toggleLobbyOverlay() {
+        if (currentGameState !== "playing" || !myTeam) return false;
+        isLobbyOverlayOpen = !isLobbyOverlayOpen;
+        clearGameplayKeys();
+        applyLobbyAndGameVisibility();
+        return true;
+      }
 
       function joinLobby() {
         const input = document.getElementById("name-input");
@@ -1402,21 +1971,25 @@
         if (!name) return;
         myName = name;
         send({ type: "join", name });
-        document.getElementById("name-form").style.display = "none";
-        document.getElementById("lobby-content").classList.add("show");
         document.getElementById("my-name-label").textContent = myName;
+        applyLobbyAndGameVisibility();
+        send({ type: "listRooms" });
       }
 
       document.getElementById("join-red").addEventListener("click", () => {
+        if (!currentRoomId) return;
         send({ type: "team", team: "red" });
       });
       document.getElementById("join-blue").addEventListener("click", () => {
+        if (!currentRoomId) return;
         send({ type: "team", team: "blue" });
       });
       document.getElementById("start-btn").addEventListener("click", () => {
+        if (!currentRoomId) return;
         send({ type: "start" });
       });
       document.getElementById("restartBtn").addEventListener("click", () => {
+        if (!currentRoomId) return;
         send({ type: "restart" });
       });
       resetSettingsBtn.addEventListener("click", () => {
@@ -1442,74 +2015,43 @@
       setupMobileControls();
 
       function onLobbyUpdate(msg) {
+        if (!msg || !msg.roomId) return;
+        if (!currentRoomId || String(msg.roomId) !== String(currentRoomId)) return;
         currentHostId = msg.hostId;
+        currentRoomName = msg.roomName || currentRoomName;
+        currentRoomType = msg.roomType || currentRoomType;
+        mutedIds = new Set(Array.isArray(msg.mutedIds) ? msg.mutedIds : []);
+        roomNameLabelEl.textContent = currentRoomName
+          ? `${currentRoomName} (${currentRoomType})`
+          : "-";
+        const prevGameState = currentGameState;
         currentGameState = msg.gameState;
-        if (msg.settings) applySettings(msg.settings);
-
-        const redList = document.getElementById("red-list");
-        const blueList = document.getElementById("blue-list");
-        redList.innerHTML = "";
-        blueList.innerHTML = "";
-
-        let spectators = [];
-        myTeam = null;
-
-        for (const p of msg.players) {
-          if (p.id === myId) myTeam = p.team;
-
-          if (p.team === "red") {
-            const li = document.createElement("li");
-            li.textContent = p.name + (p.id === currentHostId ? " ★" : "");
-            if (p.id === myId) li.classList.add("me");
-            redList.appendChild(li);
-          } else if (p.team === "blue") {
-            const li = document.createElement("li");
-            li.textContent = p.name + (p.id === currentHostId ? " ★" : "");
-            if (p.id === myId) li.classList.add("me");
-            blueList.appendChild(li);
-          } else {
-            spectators.push(p.name);
-          }
+        if (msg.gameState === "lobby" || msg.gameState === "ended") {
+          isLobbyOverlayOpen = false;
         }
-
-        const specText = document.getElementById("spectators-text");
-        specText.textContent =
-          spectators.length > 0 ? "İzleyiciler: " + spectators.join(", ") : "";
+        if (msg.settings) applySettings(msg.settings);
+        const { redCount, blueCount } = renderLobbyColumns(msg.players);
 
         refreshSettingsUI();
 
         if (msg.gameState === "playing") {
           if (myTeam) {
-            enterPlayingMode();
+            if (prevGameState !== "playing") enterPlayingMode(false);
+            else applyLobbyAndGameVisibility();
           } else {
             // Match is running; keep newcomers in lobby until they pick a team.
-            document.getElementById("lobby").classList.remove("hidden");
-            document.getElementById("game-container").classList.remove("show");
-            document.getElementById("winner-overlay").classList.remove("show");
-            if (myName) {
-              document.getElementById("name-form").style.display = "none";
-              document.getElementById("lobby-content").classList.add("show");
-            }
-            netStatsEl.style.display = "none";
+            isLobbyOverlayOpen = false;
+            applyLobbyAndGameVisibility();
           }
         } else if (msg.gameState === "lobby" || msg.gameState === "ended") {
-          document.getElementById("lobby").classList.remove("hidden");
-          document.getElementById("game-container").classList.remove("show");
-          document.getElementById("winner-overlay").classList.remove("show");
-          if (myName) {
-            document.getElementById("name-form").style.display = "none";
-            document.getElementById("lobby-content").classList.add("show");
-          }
-          if (msg.gameState === "lobby") netStatsEl.style.display = "none";
+          applyLobbyAndGameVisibility();
         }
-
-        const redCount = msg.players.filter((p) => p.team === "red").length;
-        const blueCount = msg.players.filter((p) => p.team === "blue").length;
         document.getElementById("join-red").disabled = redCount >= 4;
         document.getElementById("join-blue").disabled = blueCount >= 4;
 
         const startBtn = document.getElementById("start-btn");
         if (
+          currentRoomId &&
           myId === currentHostId &&
           (msg.gameState === "lobby" || msg.gameState === "ended")
         ) {
@@ -1613,6 +2155,35 @@
         { x: FIELD_X2, y: GOAL_Y2, r: GOAL_POST_R },
       ];
 
+      function getRuntimeField() {
+        const fieldScale = Number(gameSettings.fieldScale ?? 1);
+        const hw = FIELD_HW * fieldScale;
+        const hh = FIELD_HH * fieldScale;
+        const goalHH = GOAL_HH * fieldScale;
+        const goalDepth = GOAL_DEPTH * fieldScale;
+        const kickoffR = KICKOFF_R * fieldScale;
+        return {
+          fieldScale,
+          x1: CX - hw,
+          x2: CX + hw,
+          y1: CY - hh,
+          y2: CY + hh,
+          w: hw * 2,
+          h: hh * 2,
+          goalY1: CY - goalHH,
+          goalY2: CY + goalHH,
+          goalHH,
+          goalDepth,
+          kickoffR,
+          goalPosts: [
+            { x: CX - hw, y: CY - goalHH, r: GOAL_POST_R },
+            { x: CX - hw, y: CY + goalHH, r: GOAL_POST_R },
+            { x: CX + hw, y: CY - goalHH, r: GOAL_POST_R },
+            { x: CX + hw, y: CY + goalHH, r: GOAL_POST_R },
+          ],
+        };
+      }
+
       // Interpolation state: we keep two snapshots and lerp between them
       let prevState = null;
       let currState = null;
@@ -1632,6 +2203,8 @@
       const ZOOM_LEVELS = { Digit1: 1.6, Digit2: 1.25, Digit3: 1.0 };
       let currentZoomCode = "Digit2";
       let currentZoom = ZOOM_LEVELS[currentZoomCode];
+      let spectatorCameraMode = "ball";
+      let spectatorFollowIndex = 0;
 
       // ============ INPUT ============
 
@@ -1665,6 +2238,40 @@
         if (e.code in ZOOM_LEVELS) {
           currentZoomCode = e.code;
           currentZoom = ZOOM_LEVELS[e.code];
+          e.preventDefault();
+          return;
+        }
+        if (e.code === "Digit7") {
+          send({ type: "quickChat", code: "hype" });
+          e.preventDefault();
+          return;
+        }
+        if (e.code === "Digit8") {
+          send({ type: "quickChat", code: "pass" });
+          e.preventDefault();
+          return;
+        }
+        if (e.code === "Digit9") {
+          send({ type: "quickChat", code: "defend" });
+          e.preventDefault();
+          return;
+        }
+        if (e.code === "Digit0") {
+          send({ type: "quickChat", code: "gg" });
+          e.preventDefault();
+          return;
+        }
+        if (e.code === "Escape") {
+          if (toggleLobbyOverlay()) e.preventDefault();
+          return;
+        }
+        if (e.code === "KeyC" && currentGameState === "playing" && !myTeam) {
+          if (spectatorCameraMode === "ball") {
+            spectatorCameraMode = "player";
+            spectatorFollowIndex = (spectatorFollowIndex + 1) % Math.max(1, gamePlayers.length);
+          } else {
+            spectatorCameraMode = "ball";
+          }
           e.preventDefault();
           return;
         }
@@ -1812,13 +2419,13 @@
       // ============ GAME EVENTS ============
 
       function onGameStart() {
-        enterPlayingMode();
+        enterPlayingMode(true);
       }
 
-      function enterPlayingMode() {
+      function enterPlayingMode(resetOverlay = false) {
         currentGameState = "playing";
-        document.getElementById("lobby").classList.add("hidden");
-        document.getElementById("game-container").classList.add("show");
+        if (resetOverlay) isLobbyOverlayOpen = false;
+        applyLobbyAndGameVisibility();
         document.getElementById("winner-overlay").classList.remove("show");
         document.getElementById("restartBtn").style.display = "none";
         lastRenderTs = 0;
@@ -1872,8 +2479,9 @@
         const line = document.createElement("div");
         line.className = "chat-line";
         const mine = msg.fromId === myId ? " me" : "";
+        const quickBadge = msg.quick ? `<span style="opacity:.8">[Quick]</span> ` : "";
         line.innerHTML =
-          `<span class="chat-name${mine}">${escapeHtml(msg.fromName)}:</span> ` +
+          `${quickBadge}<span class="chat-name${mine}">${escapeHtml(msg.fromName)}:</span> ` +
           `<span>${escapeHtml(msg.text)}</span>`;
         chatMessagesEl.appendChild(line);
         while (chatMessagesEl.childElementCount > 80) {
@@ -1902,6 +2510,7 @@
       function formatSettingValue(key, value) {
         if (key === "kickRangeBonus") return value.toFixed(1);
         if (key === "kickStrength") return value.toFixed(2);
+        if (key === "playerSizeScale" || key === "fieldScale") return value.toFixed(2);
         return value.toFixed(3);
       }
 
@@ -1928,6 +2537,26 @@
             Number(gameSettings[key]),
           );
         }
+        if (quickPlayerSizeEl) {
+          quickPlayerSizeEl.disabled = !host;
+          quickPlayerSizeEl.value = String(gameSettings.playerSizeScale ?? 1);
+        }
+        if (quickFieldScaleEl) {
+          quickFieldScaleEl.disabled = !host;
+          quickFieldScaleEl.value = String(gameSettings.fieldScale ?? 1);
+        }
+        if (quickPlayerSizeValEl) {
+          quickPlayerSizeValEl.textContent = formatSettingValue(
+            "playerSizeScale",
+            Number(gameSettings.playerSizeScale ?? 1),
+          );
+        }
+        if (quickFieldScaleValEl) {
+          quickFieldScaleValEl.textContent = formatSettingValue(
+            "fieldScale",
+            Number(gameSettings.fieldScale ?? 1),
+          );
+        }
       }
 
       function setupSettingsControls() {
@@ -1945,6 +2574,22 @@
             }, 70);
           });
         }
+        const bindQuick = (inputEl, key) => {
+          if (!inputEl) return;
+          inputEl.addEventListener("input", () => {
+            const value = Number(inputEl.value);
+            if (!Number.isFinite(value) || !(key in gameSettings)) return;
+            gameSettings[key] = value;
+            refreshSettingsUI();
+            if (!isMeHost()) return;
+            if (sendSettingsTimer) clearTimeout(sendSettingsTimer);
+            sendSettingsTimer = setTimeout(() => {
+              send({ type: "settings", settings: gameSettings });
+            }, 70);
+          });
+        };
+        bindQuick(quickPlayerSizeEl, "playerSizeScale");
+        bindQuick(quickFieldScaleEl, "fieldScale");
       }
 
       let myPing = null;
@@ -2117,6 +2762,7 @@
 
       function onWinner(msg) {
         currentGameState = "ended";
+        isLobbyOverlayOpen = false;
         const ov = document.getElementById("winner-overlay");
         const t = document.getElementById("winner-title");
         const s = document.getElementById("winner-sub");
@@ -2125,7 +2771,12 @@
         t.style.color = msg.team === "red" ? "#e74c3c" : "#3498db";
         const m = Math.floor(msg.time / 60),
           sec = Math.floor(msg.time % 60);
-        s.textContent = `${msg.scoreRed} - ${msg.scoreBlue} · ${m}:${sec.toString().padStart(2, "0")}`;
+        const mvpText = msg.mvp?.name
+          ? ` · MVP: ${msg.mvp.name} (${msg.mvp.goals || 0}G/${msg.mvp.assists || 0}A)`
+          : "";
+        const modeText = msg.roomType === "ranked" ? " · Ranked" : " · Casual";
+        s.textContent = `${msg.scoreRed} - ${msg.scoreBlue} · ${m}:${sec.toString().padStart(2, "0")}${modeText}${mvpText}`;
+        send({ type: "requestLeaderboard" });
         if (winnerShowTimerId) clearTimeout(winnerShowTimerId);
         winnerShowTimerId = setTimeout(() => {
           ov.classList.add("show");
@@ -2259,50 +2910,51 @@
       }
 
       function drawField(c) {
+        const field = getRuntimeField();
         c.save();
         c.beginPath();
         const cr = CORNER_R;
-        c.moveTo(FIELD_X1 + cr, FIELD_Y1);
-        c.lineTo(FIELD_X2 - cr, FIELD_Y1);
-        c.arcTo(FIELD_X2, FIELD_Y1, FIELD_X2, FIELD_Y1 + cr, cr);
-        c.lineTo(FIELD_X2, FIELD_Y2 - cr);
-        c.arcTo(FIELD_X2, FIELD_Y2, FIELD_X2 - cr, FIELD_Y2, cr);
-        c.lineTo(FIELD_X1 + cr, FIELD_Y2);
-        c.arcTo(FIELD_X1, FIELD_Y2, FIELD_X1, FIELD_Y2 - cr, cr);
-        c.lineTo(FIELD_X1, FIELD_Y1 + cr);
-        c.arcTo(FIELD_X1, FIELD_Y1, FIELD_X1 + cr, FIELD_Y1, cr);
+        c.moveTo(field.x1 + cr, field.y1);
+        c.lineTo(field.x2 - cr, field.y1);
+        c.arcTo(field.x2, field.y1, field.x2, field.y1 + cr, cr);
+        c.lineTo(field.x2, field.y2 - cr);
+        c.arcTo(field.x2, field.y2, field.x2 - cr, field.y2, cr);
+        c.lineTo(field.x1 + cr, field.y2);
+        c.arcTo(field.x1, field.y2, field.x1, field.y2 - cr, cr);
+        c.lineTo(field.x1, field.y1 + cr);
+        c.arcTo(field.x1, field.y1, field.x1 + cr, field.y1, cr);
         c.closePath();
         c.clip();
-        const stripeW = FIELD_W / 12;
+        const stripeW = field.w / 12;
         for (let i = 0; i < 12; i++) {
           c.fillStyle = i % 2 === 0 ? FIELD_STRIPE_1 : FIELD_STRIPE_2;
-          c.fillRect(FIELD_X1 + i * stripeW, FIELD_Y1, stripeW + 1, FIELD_H);
+          c.fillRect(field.x1 + i * stripeW, field.y1, stripeW + 1, field.h);
         }
         c.restore();
 
         c.strokeStyle = "rgba(255,255,255,0.5)";
         c.lineWidth = 2;
         c.beginPath();
-        c.moveTo(FIELD_X1 + cr, FIELD_Y1);
-        c.lineTo(FIELD_X2 - cr, FIELD_Y1);
-        c.arcTo(FIELD_X2, FIELD_Y1, FIELD_X2, FIELD_Y1 + cr, cr);
-        c.lineTo(FIELD_X2, FIELD_Y2 - cr);
-        c.arcTo(FIELD_X2, FIELD_Y2, FIELD_X2 - cr, FIELD_Y2, cr);
-        c.lineTo(FIELD_X1 + cr, FIELD_Y2);
-        c.arcTo(FIELD_X1, FIELD_Y2, FIELD_X1, FIELD_Y2 - cr, cr);
-        c.lineTo(FIELD_X1, FIELD_Y1 + cr);
-        c.arcTo(FIELD_X1, FIELD_Y1, FIELD_X1 + cr, FIELD_Y1, cr);
+        c.moveTo(field.x1 + cr, field.y1);
+        c.lineTo(field.x2 - cr, field.y1);
+        c.arcTo(field.x2, field.y1, field.x2, field.y1 + cr, cr);
+        c.lineTo(field.x2, field.y2 - cr);
+        c.arcTo(field.x2, field.y2, field.x2 - cr, field.y2, cr);
+        c.lineTo(field.x1 + cr, field.y2);
+        c.arcTo(field.x1, field.y2, field.x1, field.y2 - cr, cr);
+        c.lineTo(field.x1, field.y1 + cr);
+        c.arcTo(field.x1, field.y1, field.x1 + cr, field.y1, cr);
         c.closePath();
         c.stroke();
 
         c.beginPath();
-        c.moveTo(CX, FIELD_Y1);
-        c.lineTo(CX, FIELD_Y2);
+        c.moveTo(CX, field.y1);
+        c.lineTo(CX, field.y2);
         c.strokeStyle = "rgba(255,255,255,0.4)";
         c.lineWidth = 1.5;
         c.stroke();
         c.beginPath();
-        c.arc(CX, CY, KICKOFF_R, 0, Math.PI * 2);
+        c.arc(CX, CY, field.kickoffR, 0, Math.PI * 2);
         c.stroke();
         c.beginPath();
         c.arc(CX, CY, 3, 0, Math.PI * 2);
@@ -2313,73 +2965,74 @@
           penHH = PENALTY_HH;
         c.strokeStyle = "rgba(255,255,255,0.35)";
         c.lineWidth = 1.5;
-        c.strokeRect(FIELD_X1, CY - penHH, penW, penHH * 2);
-        c.strokeRect(FIELD_X2 - penW, CY - penHH, penW, penHH * 2);
+        c.strokeRect(field.x1, CY - penHH, penW, penHH * 2);
+        c.strokeRect(field.x2 - penW, CY - penHH, penW, penHH * 2);
         c.beginPath();
-        c.arc(FIELD_X1 + penW, CY, CENTER_CIRCLE_R, -Math.PI / 2, Math.PI / 2);
+        c.arc(field.x1 + penW, CY, CENTER_CIRCLE_R, -Math.PI / 2, Math.PI / 2);
         c.strokeStyle = "rgba(255,255,255,0.2)";
         c.stroke();
         c.beginPath();
-        c.arc(FIELD_X2 - penW, CY, CENTER_CIRCLE_R, Math.PI / 2, -Math.PI / 2);
+        c.arc(field.x2 - penW, CY, CENTER_CIRCLE_R, Math.PI / 2, -Math.PI / 2);
         c.stroke();
       }
 
       function drawGoals(c) {
+        const field = getRuntimeField();
         c.fillStyle = "rgba(231,76,60,0.12)";
-        c.fillRect(FIELD_X1 - GOAL_DEPTH, GOAL_Y1, GOAL_DEPTH, GOAL_HH * 2);
+        c.fillRect(field.x1 - field.goalDepth, field.goalY1, field.goalDepth, field.goalHH * 2);
         c.strokeStyle = "rgba(231,76,60,0.3)";
         c.lineWidth = 0.5;
         for (let i = 0; i < 6; i++) {
-          const x = FIELD_X1 - GOAL_DEPTH + i * (GOAL_DEPTH / 5);
+          const x = field.x1 - field.goalDepth + i * (field.goalDepth / 5);
           c.beginPath();
-          c.moveTo(x, GOAL_Y1);
-          c.lineTo(x, GOAL_Y2);
+          c.moveTo(x, field.goalY1);
+          c.lineTo(x, field.goalY2);
           c.stroke();
         }
         for (let i = 0; i < 8; i++) {
-          const y = GOAL_Y1 + i * ((GOAL_HH * 2) / 7);
+          const y = field.goalY1 + i * ((field.goalHH * 2) / 7);
           c.beginPath();
-          c.moveTo(FIELD_X1 - GOAL_DEPTH, y);
-          c.lineTo(FIELD_X1, y);
+          c.moveTo(field.x1 - field.goalDepth, y);
+          c.lineTo(field.x1, y);
           c.stroke();
         }
         c.strokeStyle = "#e74c3c";
         c.lineWidth = 2.5;
         c.beginPath();
-        c.moveTo(FIELD_X1, GOAL_Y1);
-        c.lineTo(FIELD_X1 - GOAL_DEPTH, GOAL_Y1);
-        c.lineTo(FIELD_X1 - GOAL_DEPTH, GOAL_Y2);
-        c.lineTo(FIELD_X1, GOAL_Y2);
+        c.moveTo(field.x1, field.goalY1);
+        c.lineTo(field.x1 - field.goalDepth, field.goalY1);
+        c.lineTo(field.x1 - field.goalDepth, field.goalY2);
+        c.lineTo(field.x1, field.goalY2);
         c.stroke();
 
         c.fillStyle = "rgba(52,152,219,0.12)";
-        c.fillRect(FIELD_X2, GOAL_Y1, GOAL_DEPTH, GOAL_HH * 2);
+        c.fillRect(field.x2, field.goalY1, field.goalDepth, field.goalHH * 2);
         c.strokeStyle = "rgba(52,152,219,0.3)";
         c.lineWidth = 0.5;
         for (let i = 0; i < 6; i++) {
-          const x = FIELD_X2 + i * (GOAL_DEPTH / 5);
+          const x = field.x2 + i * (field.goalDepth / 5);
           c.beginPath();
-          c.moveTo(x, GOAL_Y1);
-          c.lineTo(x, GOAL_Y2);
+          c.moveTo(x, field.goalY1);
+          c.lineTo(x, field.goalY2);
           c.stroke();
         }
         for (let i = 0; i < 8; i++) {
-          const y = GOAL_Y1 + i * ((GOAL_HH * 2) / 7);
+          const y = field.goalY1 + i * ((field.goalHH * 2) / 7);
           c.beginPath();
-          c.moveTo(FIELD_X2, y);
-          c.lineTo(FIELD_X2 + GOAL_DEPTH, y);
+          c.moveTo(field.x2, y);
+          c.lineTo(field.x2 + field.goalDepth, y);
           c.stroke();
         }
         c.strokeStyle = "#3498db";
         c.lineWidth = 2.5;
         c.beginPath();
-        c.moveTo(FIELD_X2, GOAL_Y1);
-        c.lineTo(FIELD_X2 + GOAL_DEPTH, GOAL_Y1);
-        c.lineTo(FIELD_X2 + GOAL_DEPTH, GOAL_Y2);
-        c.lineTo(FIELD_X2, GOAL_Y2);
+        c.moveTo(field.x2, field.goalY1);
+        c.lineTo(field.x2 + field.goalDepth, field.goalY1);
+        c.lineTo(field.x2 + field.goalDepth, field.goalY2);
+        c.lineTo(field.x2, field.goalY2);
         c.stroke();
 
-        for (const p of goalPosts) {
+        for (const p of field.goalPosts) {
           c.beginPath();
           c.arc(p.x, p.y, p.r, 0, Math.PI * 2);
           c.fillStyle = "#ddd";
@@ -2409,8 +3062,9 @@
         ctx.fill();
 
         if (p.kicking) {
+          const kickRange = r + BALL_R + Number(gameSettings.kickRangeBonus ?? 4);
           ctx.beginPath();
-          ctx.arc(p.x, p.y, KICK_RANGE, 0, Math.PI * 2);
+          ctx.arc(p.x, p.y, kickRange, 0, Math.PI * 2);
           ctx.strokeStyle = isRed
             ? "rgba(231,76,60,0.3)"
             : "rgba(52,152,219,0.3)";
@@ -2443,12 +3097,21 @@
       }
 
       function getCameraState() {
+        const field = getRuntimeField();
         const zoom = currentZoom;
         const visibleW = W / zoom;
         const visibleH = H / zoom;
-        const fieldFitsScreen = visibleW >= FIELD_W && visibleH >= FIELD_H;
+        const fieldFitsScreen = visibleW >= field.w && visibleH >= field.h;
         let target = gamePlayers.find((p) => p.id === myId);
-        if (!target) target = gameBall;
+        if (!target) {
+          if (myTeam) {
+            target = gameBall;
+          } else if (spectatorCameraMode === "player" && gamePlayers.length > 0) {
+            target = gamePlayers[spectatorFollowIndex % gamePlayers.length];
+          } else {
+            target = gameBall;
+          }
+        }
 
         if (fieldFitsScreen || !target) return { zoom, camX: CX, camY: CY };
 
