@@ -406,23 +406,67 @@ let gameTime = 0;
 let kickoffPending = false;
 let kickoffTeam = "";
 
+// --- Interpolation state ---
+let prevPlayers = [];
+let prevBall = { x: 550, y: 320, r: 4.48 };
+let lastStateTime = 0;
+let interpFactor = 1;
+const LERP_SPEED = 0.25; // interpolation speed (0-1)
+
 const FIELD_COLOR = "#1a1b26";
 const LINE_COLOR = "rgba(255, 255, 255, 0.1)";
 
-function updateInputs() {
+// --- Input throttling: only send when state actually changes ---
+let lastSentInputState = null;
+let inputDirty = false;
+let inputThrottleTimer = 0;
+const INPUT_THROTTLE_MS = 16; // ~60 per second max
+
+function buildInputState() {
+  return {
+    up: !!(keys["KeyW"] || keys["ArrowUp"]),
+    down: !!(keys["KeyS"] || keys["ArrowDown"]),
+    left: !!(keys["KeyA"] || keys["ArrowLeft"]),
+    right: !!(keys["KeyD"] || keys["ArrowRight"]),
+    pass: !!keys[keyBinds.pass],
+    throughPass: !!keys[keyBinds.throughPass],
+    shoot: !!keys[keyBinds.shoot],
+  };
+}
+
+function inputStateChanged(a, b) {
+  if (!a || !b) return true;
+  return (
+    a.up !== b.up ||
+    a.down !== b.down ||
+    a.left !== b.left ||
+    a.right !== b.right ||
+    a.pass !== b.pass ||
+    a.throughPass !== b.throughPass ||
+    a.shoot !== b.shoot
+  );
+}
+
+function flushInput() {
   if (!currentRoomId || isTextEntryFocused()) return;
-  send({
-    type: "input",
-    keys: {
-      up: !!(keys["KeyW"] || keys["ArrowUp"]),
-      down: !!(keys["KeyS"] || keys["ArrowDown"]),
-      left: !!(keys["KeyA"] || keys["ArrowLeft"]),
-      right: !!(keys["KeyD"] || keys["ArrowRight"]),
-      pass: !!keys[keyBinds.pass],
-      throughPass: !!keys[keyBinds.throughPass],
-      shoot: !!keys[keyBinds.shoot],
-    },
-  });
+  const state = buildInputState();
+  if (!inputStateChanged(state, lastSentInputState)) return;
+  lastSentInputState = state;
+  send({ type: "input", keys: state });
+}
+
+function updateInputs() {
+  inputDirty = true;
+  if (inputThrottleTimer) return;
+  flushInput();
+  inputDirty = false;
+  inputThrottleTimer = setTimeout(() => {
+    inputThrottleTimer = 0;
+    if (inputDirty) {
+      flushInput();
+      inputDirty = false;
+    }
+  }, INPUT_THROTTLE_MS);
 }
 
 window.addEventListener("keydown", (e) => {
@@ -646,6 +690,12 @@ function isMeHost() {
 }
 
 function onGameState(msg) {
+  // Store previous state for interpolation
+  prevPlayers = players.map((p) => ({ ...p }));
+  prevBall = { ...ball };
+  lastStateTime = performance.now();
+  interpFactor = 0;
+
   players = msg.players;
   ball = msg.ball;
   score = { red: msg.scoreRed, blue: msg.scoreBlue };
@@ -655,6 +705,9 @@ function onGameState(msg) {
 
   if (currentGameState !== "playing") {
     currentGameState = "playing";
+    prevPlayers = players.map((p) => ({ ...p }));
+    prevBall = { ...ball };
+    interpFactor = 1;
     const lobby = document.getElementById("lobby");
     const game = document.getElementById("game-container");
     if (lobby) lobby.style.display = "none";
@@ -755,9 +808,27 @@ function onChatMessage(msg) {
 }
 
 // ============ RENDER LOOP ============
+function lerp(a, b, t) {
+  return a + (b - a) * t;
+}
+
+function getInterpPosition(prev, curr, t) {
+  if (!prev) return curr;
+  return {
+    x: lerp(prev.x, curr.x, t),
+    y: lerp(prev.y, curr.y, t),
+  };
+}
+
 function draw() {
   requestAnimationFrame(draw);
   if (currentGameState !== "playing") return;
+
+  // Update interpolation factor
+  if (interpFactor < 1) {
+    interpFactor = Math.min(1, interpFactor + LERP_SPEED);
+  }
+  const t = interpFactor;
 
   ctx.fillStyle = FIELD_COLOR;
   ctx.fillRect(0, 0, canvas.width, canvas.height);
@@ -778,20 +849,27 @@ function draw() {
   ctx.arc(canvas.width / 2, canvas.height / 2, 80, 0, Math.PI * 2);
   ctx.stroke();
 
-  // Ball
+  // Ball — interpolated position
+  const prevB = prevBall || ball;
+  const bx = lerp(prevB.x, ball.x, t);
+  const by = lerp(prevB.y, ball.y, t);
   ctx.fillStyle = "#fff";
   ctx.shadowBlur = 10;
   ctx.shadowColor = "#fff";
   ctx.beginPath();
-  ctx.arc(ball.x, ball.y, ball.r || 5, 0, Math.PI * 2);
+  ctx.arc(bx, by, ball.r || 5, 0, Math.PI * 2);
   ctx.fill();
   ctx.shadowBlur = 0;
 
-  // Players
-  players.forEach((p) => {
+  // Players — interpolated positions
+  for (let i = 0; i < players.length; i++) {
+    const p = players[i];
+    const pp = prevPlayers.find((prev) => prev.id === p.id);
+    const pos = pp ? getInterpPosition(pp, p, t) : p;
+
     ctx.fillStyle = p.team === "red" ? "#ff4757" : "#2e86de";
     ctx.beginPath();
-    ctx.arc(p.x, p.y, p.r || 15, 0, Math.PI * 2);
+    ctx.arc(pos.x, pos.y, p.r || 15, 0, Math.PI * 2);
     ctx.fill();
     ctx.strokeStyle = p.kicking ? "#fff" : "rgba(255,255,255,0.4)";
     ctx.lineWidth = 3;
@@ -801,8 +879,8 @@ function draw() {
     ctx.fillStyle = "#fff";
     ctx.font = "bold 13px Outfit";
     ctx.textAlign = "center";
-    ctx.fillText(p.name, p.x, p.y - (p.r || 15) - 7);
-  });
+    ctx.fillText(p.name, pos.x, pos.y - (p.r || 15) - 7);
+  }
 }
 
 function resizeCanvas() {

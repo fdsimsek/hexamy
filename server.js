@@ -461,6 +461,294 @@ let shuttingDown = false;
 const metrics = new Metrics();
 const store = loadStore();
 
+// ============ BOT SYSTEM ============
+
+const BOT_NAMES = [
+  "Karadeniz Fırtınası",
+  "Lazoğlu",
+  "Çılgın Tosun",
+  "Bitmez Enerji",
+  "Rüzgar",
+  "Torpil",
+  "Şaşkın Kedi",
+  "Robot Bacak",
+  "Yıldız",
+  "Panik Reis",
+  "Hızlı Sinan",
+  "Uyuyan Dev",
+  "Goool",
+  "Savunma Duvarı",
+  "Dribble Master",
+];
+
+const BOT_PERSONALITIES = [
+  "aggressive",
+  "defender",
+  "drunk",
+  "coward",
+  "striker",
+];
+
+function createBotPersonality() {
+  const type =
+    BOT_PERSONALITIES[Math.floor(Math.random() * BOT_PERSONALITIES.length)];
+  return {
+    type,
+    reactionDelay: 3 + Math.floor(Math.random() * 12), // frames before reacting
+    accuracy: 0.3 + Math.random() * 0.5, // 0.3 - 0.8
+    chaosTimer: 0,
+    chaosDir: { x: 0, y: 0 },
+    wanderAngle: Math.random() * Math.PI * 2,
+    kickCooldownExtra: Math.floor(Math.random() * 10),
+    panicRadius: 80 + Math.random() * 100,
+    frameCounter: 0,
+  };
+}
+
+function updateBotAI(room, client) {
+  if (!client.isBot || !client.player || !client.team) return;
+  const p = client.player;
+  const ball = room.ball;
+  const personality = client.botPersonality;
+  personality.frameCounter++;
+
+  // Skip frames for reaction delay
+  if (personality.frameCounter % Math.max(1, personality.reactionDelay) !== 0)
+    return;
+
+  const dx = ball.x - p.x;
+  const dy = ball.y - p.y;
+  const distBall = Math.hypot(dx, dy);
+  const goalX = client.team === "red" ? FIELD_X2 + 20 : FIELD_X1 - 20;
+  const ownGoalX = client.team === "red" ? FIELD_X1 : FIELD_X2;
+  const keys = client.keys;
+
+  // Reset keys
+  keys.up = false;
+  keys.down = false;
+  keys.left = false;
+  keys.right = false;
+  keys.kick = false;
+  keys.pass = false;
+  keys.shoot = false;
+  keys.throughPass = false;
+
+  // Chaos bursts: random direction changes
+  personality.chaosTimer--;
+  if (personality.chaosTimer <= 0) {
+    personality.chaosTimer = 15 + Math.floor(Math.random() * 40);
+    personality.wanderAngle += (Math.random() - 0.5) * 2.5;
+    personality.chaosDir = {
+      x: Math.cos(personality.wanderAngle),
+      y: Math.sin(personality.wanderAngle),
+    };
+  }
+
+  let targetX = ball.x;
+  let targetY = ball.y;
+  let shouldKick = false;
+
+  switch (personality.type) {
+    case "aggressive": {
+      // Chase ball like crazy, always try to shoot
+      targetX = ball.x + (Math.random() - 0.5) * 30;
+      targetY = ball.y + (Math.random() - 0.5) * 30;
+      shouldKick = distBall < 45 + Math.random() * 20;
+      if (shouldKick && Math.random() > 0.3) keys.shoot = true;
+      else if (shouldKick) keys.kick = true;
+      break;
+    }
+    case "defender": {
+      // Stay near own goal, only chase ball if it's close
+      const defenseX = ownGoalX + (client.team === "red" ? 80 : -80);
+      if (distBall < personality.panicRadius) {
+        // PANIC: chase ball
+        targetX = ball.x;
+        targetY = ball.y;
+        shouldKick = distBall < 35;
+        if (shouldKick) {
+          if (Math.random() > 0.5) keys.pass = true;
+          else keys.kick = true;
+        }
+      } else {
+        // Patrol near goal
+        targetX = defenseX + Math.sin(personality.frameCounter * 0.02) * 40;
+        targetY = CY + Math.sin(personality.frameCounter * 0.03) * 80;
+      }
+      break;
+    }
+    case "drunk": {
+      // Wander randomly, occasionally stumble into ball
+      targetX = p.x + personality.chaosDir.x * 60;
+      targetY = p.y + personality.chaosDir.y * 60;
+      if (distBall < 30) {
+        // Oh look, a ball!
+        shouldKick = Math.random() > 0.3;
+        if (shouldKick) {
+          const r = Math.random();
+          if (r > 0.6) keys.shoot = true;
+          else if (r > 0.3) keys.pass = true;
+          else keys.throughPass = true;
+        }
+      }
+      // Sometimes randomly change direction
+      if (Math.random() < 0.05) {
+        personality.wanderAngle = Math.random() * Math.PI * 2;
+      }
+      break;
+    }
+    case "coward": {
+      // Run AWAY from ball, only kick when cornered
+      if (distBall < personality.panicRadius) {
+        targetX = p.x - dx * 0.5;
+        targetY = p.y - dy * 0.5;
+        if (distBall < 25) {
+          shouldKick = true;
+          keys.kick = true; // panic kick!
+        }
+      } else {
+        // Idle floaty movement
+        targetX = CX + Math.sin(personality.frameCounter * 0.01) * 120;
+        targetY = CY + Math.cos(personality.frameCounter * 0.015) * 60;
+      }
+      break;
+    }
+    case "striker": {
+      // Always rush toward opponent's goal, long shots
+      const strikeX = goalX + (Math.random() - 0.5) * 60;
+      const distGoal = Math.abs(p.x - goalX);
+      if (distBall < 50) {
+        targetX = ball.x;
+        targetY = ball.y;
+        shouldKick = distBall < 40;
+        if (shouldKick) {
+          if (distGoal < 200 || Math.random() > 0.4) keys.shoot = true;
+          else keys.throughPass = true;
+        }
+      } else {
+        targetX = strikeX;
+        targetY = CY + (Math.random() - 0.5) * 100;
+      }
+      break;
+    }
+  }
+
+  // Add chaos noise to target
+  const noiseScale = personality.type === "drunk" ? 40 : 15;
+  targetX += (Math.random() - 0.5) * noiseScale;
+  targetY += (Math.random() - 0.5) * noiseScale;
+
+  // Convert target to movement keys
+  const moveX = targetX - p.x;
+  const moveY = targetY - p.y;
+  const deadzone = 8;
+  if (moveX > deadzone) keys.right = true;
+  else if (moveX < -deadzone) keys.left = true;
+  if (moveY > deadzone) keys.down = true;
+  else if (moveY < -deadzone) keys.up = true;
+
+  // Random accuracy misses
+  if (Math.random() > personality.accuracy) {
+    const rand = Math.random();
+    if (rand > 0.75) {
+      keys.left = !keys.left;
+      keys.right = !keys.right;
+    } else if (rand > 0.5) {
+      keys.up = !keys.up;
+      keys.down = !keys.down;
+    }
+  }
+}
+
+function handleAddBot(client) {
+  const room = getRoomByClient(client);
+  if (!room) return;
+  ensureRoomHost(room);
+  if (client.id !== room.hostId) {
+    sendActionResult(
+      client,
+      "addBot",
+      false,
+      "NOT_HOST",
+      "Sadece host bot ekleyebilir.",
+    );
+    return;
+  }
+  // Find team with fewer players
+  const roomClients = getRoomClients(room);
+  const redCount = roomClients.filter((c) => c.team === "red").length;
+  const blueCount = roomClients.filter((c) => c.team === "blue").length;
+  const totalPlayers = redCount + blueCount;
+  if (totalPlayers >= MAX_TEAM_SIZE * 2) {
+    sendActionResult(client, "addBot", false, "TEAMS_FULL", "Takımlar dolu.");
+    return;
+  }
+  const botTeam = redCount <= blueCount ? "red" : "blue";
+  const botId = nextId++;
+  const botName = BOT_NAMES[Math.floor(Math.random() * BOT_NAMES.length)];
+  const botPersonality = createBotPersonality();
+  const botClient = {
+    ws: null,
+    id: botId,
+    name: `🤖 ${botName}`,
+    roomId: room.id,
+    team: botTeam,
+    keys: {
+      up: false,
+      down: false,
+      left: false,
+      right: false,
+      pass: false,
+      throughPass: false,
+      shoot: false,
+      kick: false,
+    },
+    player: null,
+    kickCooldown: 0,
+    pingMs: 0,
+    pingRawMs: 0,
+    lastPongAt: Date.now(),
+    lastPingSentAt: 0,
+    lastPingHrNs: null,
+    nextPingAt: Infinity,
+    awaitingPong: false,
+    rateLimitWindowStart: Date.now(),
+    rateLimitCounts: {},
+    passwordFailWindowStart: 0,
+    passwordFailCount: 0,
+    reconnectToken: `bot-${botId}`,
+    chatTimestamps: [],
+    matchStats: { goals: 0, assists: 0, touches: 0 },
+    netTelemetry: null,
+    isBot: true,
+    botPersonality,
+  };
+  room.clientIds.add(botId);
+  room.joinOrder.set(botId, room.nextJoinSeq++);
+  clientsById.set(botId, botClient);
+  // Give player body if game is playing
+  if (room.gameState === "playing") {
+    botClient.player = {
+      x: 0,
+      y: 0,
+      vx: 0,
+      vy: 0,
+      r: getPlayerRadius(room),
+      kicking: false,
+      isBall: false,
+    };
+    spawnPlayerForClient(room, botClient);
+  }
+  publishRoomState(room);
+  sendActionResult(
+    client,
+    "addBot",
+    true,
+    "BOT_ADDED",
+    `Bot eklendi: ${botName} (${botPersonality.type})`,
+  );
+}
+
 function clamp(v, min, max) {
   return Math.max(min, Math.min(max, v));
 }
@@ -736,8 +1024,13 @@ function sendRoomList(client) {
   sendToClient(client, { type: "roomList", rooms: roomList });
 }
 
+let roomListBroadcastTimer = null;
 function broadcastRoomListAll() {
-  for (const [, client] of clients) sendRoomList(client);
+  if (roomListBroadcastTimer) return; // already scheduled
+  roomListBroadcastTimer = setTimeout(() => {
+    roomListBroadcastTimer = null;
+    for (const [, client] of clients) sendRoomList(client);
+  }, 500);
 }
 
 function ensureRoomHost(room) {
@@ -1494,6 +1787,10 @@ function gameUpdate(room) {
   if (room.goalScoredState && handleGoalCelebration(room)) return;
   room.gameTime += 1 / 60;
   const activePlayers = getPlayersArray(room);
+  // Update bot AI before processing inputs
+  for (const { client } of activePlayers) {
+    if (client.isBot) updateBotAI(room, client);
+  }
   for (const { client } of activePlayers) handlePlayerInput(room, client);
   processKicks(room, activePlayers);
   applyMovement(room, activePlayers);
@@ -2410,6 +2707,7 @@ const messageHandlers = {
   transferHost: handleTransferHost,
   requestLeaderboard: handleRequestLeaderboard,
   netTelemetry: handleNetTelemetry,
+  addBot: handleAddBot,
   reconnect: handleReconnect,
 };
 
