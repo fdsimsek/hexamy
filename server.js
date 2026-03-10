@@ -11,14 +11,21 @@ const { Metrics } = require("./lib/metrics");
 
 const app = express();
 const server = http.createServer(app);
-const MAX_WS_PAYLOAD_BYTES = Number(process.env.MAX_WS_PAYLOAD_BYTES || 16 * 1024);
+const MAX_WS_PAYLOAD_BYTES = Number(
+  process.env.MAX_WS_PAYLOAD_BYTES || 16 * 1024,
+);
 const MAX_CONNECTIONS = Number(process.env.MAX_CONNECTIONS || 64);
 const MAX_BUFFERED_AMOUNT_BYTES = Number(
   process.env.MAX_BUFFERED_AMOUNT_BYTES || 512 * 1024,
 );
 const STATE_BROADCAST_HZ = Number(process.env.STATE_BROADCAST_HZ || 30);
-const STATE_BROADCAST_MS = Math.max(12, 1000 / Math.max(10, STATE_BROADCAST_HZ));
-const SERVER_JITTER_BUFFER_MS = Number(process.env.SERVER_JITTER_BUFFER_MS || 24);
+const STATE_BROADCAST_MS = Math.max(
+  12,
+  1000 / Math.max(10, STATE_BROADCAST_HZ),
+);
+const SERVER_JITTER_BUFFER_MS = Number(
+  process.env.SERVER_JITTER_BUFFER_MS || 24,
+);
 const MAX_UPDATES_PER_CYCLE = Number(process.env.MAX_UPDATES_PER_CYCLE || 2);
 const ENABLE_EXTRAPOLATION = !["0", "false", "off"].includes(
   String(process.env.ENABLE_EXTRAPOLATION || "1").toLowerCase(),
@@ -42,6 +49,8 @@ const RATE_LIMIT_PER_WINDOW = {
   settings: Number(process.env.RATE_LIMIT_SETTINGS || 30),
   resetSettings: Number(process.env.RATE_LIMIT_RESET_SETTINGS || 6),
   start: Number(process.env.RATE_LIMIT_START || 6),
+  pause: Number(process.env.RATE_LIMIT_PAUSE || 6),
+  resume: Number(process.env.RATE_LIMIT_RESUME || 6),
   restart: Number(process.env.RATE_LIMIT_RESTART || 6),
   transferHost: Number(process.env.RATE_LIMIT_TRANSFER_HOST || 8),
   netTelemetry: Number(process.env.RATE_LIMIT_NET_TELEMETRY || 8),
@@ -143,10 +152,20 @@ function summarizeRoomsDetailed() {
         team: client.team,
         pingMs: pickValue(client.pingMs, null),
         pingRawMs: pickValue(client.pingRawMs, null),
-        clientStateDeltaP95Ms: pickValue(client.netTelemetry?.stateDeltaP95Ms, null),
-        clientStateDeltaMaxMs: pickValue(client.netTelemetry?.stateDeltaMaxMs, null),
-        clientJitterBufferMs: pickValue(client.netTelemetry?.jitterBufferMs, null),
-        clientExtrapolationEnabled: client.netTelemetry?.extrapolationEnabled ?? null,
+        clientStateDeltaP95Ms: pickValue(
+          client.netTelemetry?.stateDeltaP95Ms,
+          null,
+        ),
+        clientStateDeltaMaxMs: pickValue(
+          client.netTelemetry?.stateDeltaMaxMs,
+          null,
+        ),
+        clientJitterBufferMs: pickValue(
+          client.netTelemetry?.jitterBufferMs,
+          null,
+        ),
+        clientExtrapolationEnabled:
+          client.netTelemetry?.extrapolationEnabled ?? null,
         telemetryAgeMs: client.netTelemetry?.updatedAt
           ? Math.max(0, Date.now() - client.netTelemetry.updatedAt)
           : null,
@@ -173,18 +192,34 @@ function summarizeRoomsDetailed() {
 
 function buildNetworkRecommendations(networkSummary, roomBreakdown) {
   const recs = [];
-  if ((networkSummary.wsBufferedP95Bytes || 0) > 4096 || (networkSummary.wsBufferedMaxBytes || 0) > 65536) {
-    recs.push("Socket kuyruk baskisi var: STATE_BROADCAST_HZ dusur veya payloadi sadeleştir.");
+  if (
+    (networkSummary.wsBufferedP95Bytes || 0) > 4096 ||
+    (networkSummary.wsBufferedMaxBytes || 0) > 65536
+  ) {
+    recs.push(
+      "Socket kuyruk baskisi var: STATE_BROADCAST_HZ dusur veya payloadi sadeleştir.",
+    );
   }
-  if ((networkSummary.accumulatorResets || 0) > 0 || (networkSummary.tickElapsedP95Ms || 0) > 19) {
-    recs.push("Server tick timing zorlanıyor: MAX_UPDATES_PER_CYCLE=2/3 ve yayin Hz dengesini test et.");
+  if (
+    (networkSummary.accumulatorResets || 0) > 0 ||
+    (networkSummary.tickElapsedP95Ms || 0) > 19
+  ) {
+    recs.push(
+      "Server tick timing zorlanıyor: MAX_UPDATES_PER_CYCLE=2/3 ve yayin Hz dengesini test et.",
+    );
   }
-  const highDeltaRooms = roomBreakdown.filter((room) => (room.stateDeltaP95Ms || 0) > 45);
+  const highDeltaRooms = roomBreakdown.filter(
+    (room) => (room.stateDeltaP95Ms || 0) > 45,
+  );
   if (highDeltaRooms.length > 0) {
-    recs.push("Client inter-arrival jitter yuksek: SERVER_JITTER_BUFFER_MS 24->32 ve extrapolation kapali A/B dene.");
+    recs.push(
+      "Client inter-arrival jitter yuksek: SERVER_JITTER_BUFFER_MS 24->32 ve extrapolation kapali A/B dene.",
+    );
   }
   if (recs.length === 0) {
-    recs.push("Belirgin server-side darboğaz görünmüyor; Wi-Fi parazit/kanal yoğunluğu ve cihaz FPS tarafını kontrol et.");
+    recs.push(
+      "Belirgin server-side darboğaz görünmüyor; Wi-Fi parazit/kanal yoğunluğu ve cihaz FPS tarafını kontrol et.",
+    );
   }
   return recs;
 }
@@ -315,6 +350,7 @@ const DEFAULT_GAME_SETTINGS = {
   ballDamping: 0.99,
   playerSizeScale: 1,
   fieldScale: 1,
+  winScore: 5,
 };
 
 const SETTINGS_LIMITS = {
@@ -327,6 +363,7 @@ const SETTINGS_LIMITS = {
   ballDamping: [0.93, 0.999],
   playerSizeScale: [0.7, 1.35],
   fieldScale: [0.8, 1.25],
+  winScore: [1, 50],
 };
 
 const PLAYER_INV_MASS = 0.5;
@@ -336,7 +373,10 @@ const GOAL_CELEBRATION_FRAMES = 300;
 const SPAWN_DIST = 170 * SCALE;
 const MAX_TEAM_SIZE = 4;
 const TICK_MS = 1000 / 60;
-const BROADCAST_EVERY_N_TICKS = Math.max(1, Math.round(STATE_BROADCAST_MS / TICK_MS));
+const BROADCAST_EVERY_N_TICKS = Math.max(
+  1,
+  Math.round(STATE_BROADCAST_MS / TICK_MS),
+);
 const MAX_CATCHUP_STEPS = 4;
 const PASSWORD_FAIL_WINDOW_MS = 10000;
 const PASSWORD_FAIL_LIMIT = 8;
@@ -370,7 +410,11 @@ const goalPosts = [
 ];
 
 function getFieldMetrics(room) {
-  const fieldScale = clamp(Number(room?.gameSettings?.fieldScale) || 1, 0.8, 1.25);
+  const fieldScale = clamp(
+    Number(room?.gameSettings?.fieldScale) || 1,
+    0.8,
+    1.25,
+  );
   const hw = FIELD_HW * fieldScale;
   const hh = FIELD_HH * fieldScale;
   const goalHH = GOAL_HH * fieldScale;
@@ -396,7 +440,11 @@ function getFieldMetrics(room) {
 }
 
 function getPlayerRadius(room) {
-  const playerScale = clamp(Number(room?.gameSettings?.playerSizeScale) || 1, 0.7, 1.35);
+  const playerScale = clamp(
+    Number(room?.gameSettings?.playerSizeScale) || 1,
+    0.7,
+    1.35,
+  );
   return PLAYER_R * playerScale;
 }
 
@@ -412,6 +460,294 @@ let pingInterval = null;
 let shuttingDown = false;
 const metrics = new Metrics();
 const store = loadStore();
+
+// ============ BOT SYSTEM ============
+
+const BOT_NAMES = [
+  "Karadeniz Fırtınası",
+  "Lazoğlu",
+  "Çılgın Tosun",
+  "Bitmez Enerji",
+  "Rüzgar",
+  "Torpil",
+  "Şaşkın Kedi",
+  "Robot Bacak",
+  "Yıldız",
+  "Panik Reis",
+  "Hızlı Sinan",
+  "Uyuyan Dev",
+  "Goool",
+  "Savunma Duvarı",
+  "Dribble Master",
+];
+
+const BOT_PERSONALITIES = [
+  "aggressive",
+  "defender",
+  "drunk",
+  "coward",
+  "striker",
+];
+
+function createBotPersonality() {
+  const type =
+    BOT_PERSONALITIES[Math.floor(Math.random() * BOT_PERSONALITIES.length)];
+  return {
+    type,
+    reactionDelay: 3 + Math.floor(Math.random() * 12), // frames before reacting
+    accuracy: 0.3 + Math.random() * 0.5, // 0.3 - 0.8
+    chaosTimer: 0,
+    chaosDir: { x: 0, y: 0 },
+    wanderAngle: Math.random() * Math.PI * 2,
+    kickCooldownExtra: Math.floor(Math.random() * 10),
+    panicRadius: 80 + Math.random() * 100,
+    frameCounter: 0,
+  };
+}
+
+function updateBotAI(room, client) {
+  if (!client.isBot || !client.player || !client.team) return;
+  const p = client.player;
+  const ball = room.ball;
+  const personality = client.botPersonality;
+  personality.frameCounter++;
+
+  // Skip frames for reaction delay
+  if (personality.frameCounter % Math.max(1, personality.reactionDelay) !== 0)
+    return;
+
+  const dx = ball.x - p.x;
+  const dy = ball.y - p.y;
+  const distBall = Math.hypot(dx, dy);
+  const goalX = client.team === "red" ? FIELD_X2 + 20 : FIELD_X1 - 20;
+  const ownGoalX = client.team === "red" ? FIELD_X1 : FIELD_X2;
+  const keys = client.keys;
+
+  // Reset keys
+  keys.up = false;
+  keys.down = false;
+  keys.left = false;
+  keys.right = false;
+  keys.kick = false;
+  keys.pass = false;
+  keys.shoot = false;
+  keys.throughPass = false;
+
+  // Chaos bursts: random direction changes
+  personality.chaosTimer--;
+  if (personality.chaosTimer <= 0) {
+    personality.chaosTimer = 15 + Math.floor(Math.random() * 40);
+    personality.wanderAngle += (Math.random() - 0.5) * 2.5;
+    personality.chaosDir = {
+      x: Math.cos(personality.wanderAngle),
+      y: Math.sin(personality.wanderAngle),
+    };
+  }
+
+  let targetX = ball.x;
+  let targetY = ball.y;
+  let shouldKick = false;
+
+  switch (personality.type) {
+    case "aggressive": {
+      // Chase ball like crazy, always try to shoot
+      targetX = ball.x + (Math.random() - 0.5) * 30;
+      targetY = ball.y + (Math.random() - 0.5) * 30;
+      shouldKick = distBall < 45 + Math.random() * 20;
+      if (shouldKick && Math.random() > 0.3) keys.shoot = true;
+      else if (shouldKick) keys.kick = true;
+      break;
+    }
+    case "defender": {
+      // Stay near own goal, only chase ball if it's close
+      const defenseX = ownGoalX + (client.team === "red" ? 80 : -80);
+      if (distBall < personality.panicRadius) {
+        // PANIC: chase ball
+        targetX = ball.x;
+        targetY = ball.y;
+        shouldKick = distBall < 35;
+        if (shouldKick) {
+          if (Math.random() > 0.5) keys.pass = true;
+          else keys.kick = true;
+        }
+      } else {
+        // Patrol near goal
+        targetX = defenseX + Math.sin(personality.frameCounter * 0.02) * 40;
+        targetY = CY + Math.sin(personality.frameCounter * 0.03) * 80;
+      }
+      break;
+    }
+    case "drunk": {
+      // Wander randomly, occasionally stumble into ball
+      targetX = p.x + personality.chaosDir.x * 60;
+      targetY = p.y + personality.chaosDir.y * 60;
+      if (distBall < 30) {
+        // Oh look, a ball!
+        shouldKick = Math.random() > 0.3;
+        if (shouldKick) {
+          const r = Math.random();
+          if (r > 0.6) keys.shoot = true;
+          else if (r > 0.3) keys.pass = true;
+          else keys.throughPass = true;
+        }
+      }
+      // Sometimes randomly change direction
+      if (Math.random() < 0.05) {
+        personality.wanderAngle = Math.random() * Math.PI * 2;
+      }
+      break;
+    }
+    case "coward": {
+      // Run AWAY from ball, only kick when cornered
+      if (distBall < personality.panicRadius) {
+        targetX = p.x - dx * 0.5;
+        targetY = p.y - dy * 0.5;
+        if (distBall < 25) {
+          shouldKick = true;
+          keys.kick = true; // panic kick!
+        }
+      } else {
+        // Idle floaty movement
+        targetX = CX + Math.sin(personality.frameCounter * 0.01) * 120;
+        targetY = CY + Math.cos(personality.frameCounter * 0.015) * 60;
+      }
+      break;
+    }
+    case "striker": {
+      // Always rush toward opponent's goal, long shots
+      const strikeX = goalX + (Math.random() - 0.5) * 60;
+      const distGoal = Math.abs(p.x - goalX);
+      if (distBall < 50) {
+        targetX = ball.x;
+        targetY = ball.y;
+        shouldKick = distBall < 40;
+        if (shouldKick) {
+          if (distGoal < 200 || Math.random() > 0.4) keys.shoot = true;
+          else keys.throughPass = true;
+        }
+      } else {
+        targetX = strikeX;
+        targetY = CY + (Math.random() - 0.5) * 100;
+      }
+      break;
+    }
+  }
+
+  // Add chaos noise to target
+  const noiseScale = personality.type === "drunk" ? 40 : 15;
+  targetX += (Math.random() - 0.5) * noiseScale;
+  targetY += (Math.random() - 0.5) * noiseScale;
+
+  // Convert target to movement keys
+  const moveX = targetX - p.x;
+  const moveY = targetY - p.y;
+  const deadzone = 8;
+  if (moveX > deadzone) keys.right = true;
+  else if (moveX < -deadzone) keys.left = true;
+  if (moveY > deadzone) keys.down = true;
+  else if (moveY < -deadzone) keys.up = true;
+
+  // Random accuracy misses
+  if (Math.random() > personality.accuracy) {
+    const rand = Math.random();
+    if (rand > 0.75) {
+      keys.left = !keys.left;
+      keys.right = !keys.right;
+    } else if (rand > 0.5) {
+      keys.up = !keys.up;
+      keys.down = !keys.down;
+    }
+  }
+}
+
+function handleAddBot(client) {
+  const room = getRoomByClient(client);
+  if (!room) return;
+  ensureRoomHost(room);
+  if (client.id !== room.hostId) {
+    sendActionResult(
+      client,
+      "addBot",
+      false,
+      "NOT_HOST",
+      "Sadece host bot ekleyebilir.",
+    );
+    return;
+  }
+  // Find team with fewer players
+  const roomClients = getRoomClients(room);
+  const redCount = roomClients.filter((c) => c.team === "red").length;
+  const blueCount = roomClients.filter((c) => c.team === "blue").length;
+  const totalPlayers = redCount + blueCount;
+  if (totalPlayers >= MAX_TEAM_SIZE * 2) {
+    sendActionResult(client, "addBot", false, "TEAMS_FULL", "Takımlar dolu.");
+    return;
+  }
+  const botTeam = redCount <= blueCount ? "red" : "blue";
+  const botId = nextId++;
+  const botName = BOT_NAMES[Math.floor(Math.random() * BOT_NAMES.length)];
+  const botPersonality = createBotPersonality();
+  const botClient = {
+    ws: null,
+    id: botId,
+    name: `🤖 ${botName}`,
+    roomId: room.id,
+    team: botTeam,
+    keys: {
+      up: false,
+      down: false,
+      left: false,
+      right: false,
+      pass: false,
+      throughPass: false,
+      shoot: false,
+      kick: false,
+    },
+    player: null,
+    kickCooldown: 0,
+    pingMs: 0,
+    pingRawMs: 0,
+    lastPongAt: Date.now(),
+    lastPingSentAt: 0,
+    lastPingHrNs: null,
+    nextPingAt: Infinity,
+    awaitingPong: false,
+    rateLimitWindowStart: Date.now(),
+    rateLimitCounts: {},
+    passwordFailWindowStart: 0,
+    passwordFailCount: 0,
+    reconnectToken: `bot-${botId}`,
+    chatTimestamps: [],
+    matchStats: { goals: 0, assists: 0, touches: 0 },
+    netTelemetry: null,
+    isBot: true,
+    botPersonality,
+  };
+  room.clientIds.add(botId);
+  room.joinOrder.set(botId, room.nextJoinSeq++);
+  clientsById.set(botId, botClient);
+  // Give player body if game is playing
+  if (room.gameState === "playing") {
+    botClient.player = {
+      x: 0,
+      y: 0,
+      vx: 0,
+      vy: 0,
+      r: getPlayerRadius(room),
+      kicking: false,
+      isBall: false,
+    };
+    spawnPlayerForClient(room, botClient);
+  }
+  publishRoomState(room);
+  sendActionResult(
+    client,
+    "addBot",
+    true,
+    "BOT_ADDED",
+    `Bot eklendi: ${botName} (${botPersonality.type})`,
+  );
+}
 
 function clamp(v, min, max) {
   return Math.max(min, Math.min(max, v));
@@ -429,12 +765,16 @@ function sanitizeSettings(rawSettings, currentSettings) {
 }
 
 function sanitizeName(rawName, fallback) {
-  const name = String(rawName ?? "").trim().slice(0, 16);
+  const name = String(rawName ?? "")
+    .trim()
+    .slice(0, 16);
   return name || fallback;
 }
 
 function sanitizeRoomName(rawName, fallback) {
-  const name = String(rawName ?? "").trim().slice(0, ROOM_NAME_MAX_LEN);
+  const name = String(rawName ?? "")
+    .trim()
+    .slice(0, ROOM_NAME_MAX_LEN);
   return name || fallback;
 }
 
@@ -459,7 +799,9 @@ function cleanupReconnectSessions() {
 }
 
 function sanitizeChatText(rawText) {
-  let text = String(rawText ?? "").trim().slice(0, 180);
+  let text = String(rawText ?? "")
+    .trim()
+    .slice(0, 180);
   if (!text) return "";
   const lowered = text.toLowerCase();
   for (const term of BANNED_CHAT_TERMS) {
@@ -497,10 +839,12 @@ function getPlayerStoreEntryByClient(client) {
 }
 
 function updateWeeklyQuests(entry, matchStats, didWin) {
-  if (!entry?.weeklyQuests) entry.weeklyQuests = { goals3: 0, assists2: 0, wins2: 0 };
+  if (!entry?.weeklyQuests)
+    entry.weeklyQuests = { goals3: 0, assists2: 0, wins2: 0 };
   if ((matchStats.goals || 0) >= 3) entry.weeklyQuests.goals3 = 1;
   if ((matchStats.assists || 0) >= 2) entry.weeklyQuests.assists2 = 1;
-  if (didWin) entry.weeklyQuests.wins2 = Math.min(2, (entry.weeklyQuests.wins2 || 0) + 1);
+  if (didWin)
+    entry.weeklyQuests.wins2 = Math.min(2, (entry.weeklyQuests.wins2 || 0) + 1);
 }
 
 function createPasswordHash(password) {
@@ -517,7 +861,7 @@ function verifyPassword(password, salt, expectedHashHex) {
   return crypto.timingSafeEqual(expected, candidate);
 }
 
-function createRoomState(name, password, roomType = "casual") {
+function createRoomState(name, password, roomType = "casual", settings = null) {
   const roomId = String(nextRoomId++);
   const room = {
     id: roomId,
@@ -537,7 +881,7 @@ function createRoomState(name, password, roomType = "casual") {
     gameTime: 0,
     goalScoredState: null,
     goalScoredTimer: 0,
-    gameSettings: { ...DEFAULT_GAME_SETTINGS },
+    gameSettings: sanitizeSettings(settings, { ...DEFAULT_GAME_SETTINGS }),
     kickoffPending: false,
     kickoffTeam: "red",
     nextKickoffTeam: "red",
@@ -634,7 +978,8 @@ function broadcastRoom(room, msg) {
     const buffered = Number(ws.bufferedAmount) || 0;
     if (room?.netStats) {
       pushSample(room.netStats.bufferedSamples, buffered);
-      if (buffered > room.netStats.bufferedMaxBytes) room.netStats.bufferedMaxBytes = buffered;
+      if (buffered > room.netStats.bufferedMaxBytes)
+        room.netStats.bufferedMaxBytes = buffered;
     }
     if (ws.bufferedAmount > MAX_BUFFERED_AMOUNT_BYTES) {
       ws.terminate();
@@ -679,8 +1024,13 @@ function sendRoomList(client) {
   sendToClient(client, { type: "roomList", rooms: roomList });
 }
 
+let roomListBroadcastTimer = null;
 function broadcastRoomListAll() {
-  for (const [, client] of clients) sendRoomList(client);
+  if (roomListBroadcastTimer) return; // already scheduled
+  roomListBroadcastTimer = setTimeout(() => {
+    roomListBroadcastTimer = null;
+    for (const [, client] of clients) sendRoomList(client);
+  }, 500);
 }
 
 function ensureRoomHost(room) {
@@ -765,7 +1115,13 @@ function leaveCurrentRoom(client, options = {}) {
   }
 
   if (options.sendActionResult) {
-    sendActionResult(client, options.action || "leaveRoom", true, "LEFT_ROOM", "Odadan ayrıldın.");
+    sendActionResult(
+      client,
+      options.action || "leaveRoom",
+      true,
+      "LEFT_ROOM",
+      "Odadan ayrıldın.",
+    );
   }
   broadcastRoomListAll();
   if (options.sendRoomLeft) {
@@ -776,7 +1132,13 @@ function leaveCurrentRoom(client, options = {}) {
 function joinRoom(client, room, password, options = {}) {
   const action = options.action || "joinRoom";
   if (!room) {
-    sendActionResult(client, action, false, "ROOM_NOT_FOUND", "Oda bulunamadı.");
+    sendActionResult(
+      client,
+      action,
+      false,
+      "ROOM_NOT_FOUND",
+      "Oda bulunamadı.",
+    );
     return { ok: false, code: "ROOM_NOT_FOUND" };
   }
   const normalizedPassword = sanitizePassword(password);
@@ -791,10 +1153,20 @@ function joinRoom(client, room, password, options = {}) {
       );
       return { ok: false, code: "PASSWORD_ATTEMPTS_BLOCKED" };
     }
-    const ok = verifyPassword(normalizedPassword, room.passwordSalt, room.passwordHash);
+    const ok = verifyPassword(
+      normalizedPassword,
+      room.passwordSalt,
+      room.passwordHash,
+    );
     if (!ok) {
       registerFailedPasswordAttempt(client);
-      sendActionResult(client, action, false, "INVALID_PASSWORD", "Şifre hatalı.");
+      sendActionResult(
+        client,
+        action,
+        false,
+        "INVALID_PASSWORD",
+        "Şifre hatalı.",
+      );
       return { ok: false, code: "INVALID_PASSWORD" };
     }
   }
@@ -897,7 +1269,10 @@ function spawnPlayerForClient(room, client) {
   const teamPlayers = getRoomClients(room).filter(
     (c) => c.team === client.team && c.player,
   );
-  const idx = Math.max(0, teamPlayers.findIndex((c) => c.id === client.id));
+  const idx = Math.max(
+    0,
+    teamPlayers.findIndex((c) => c.id === client.id),
+  );
   const spacing = 45;
   const spawnDist = SPAWN_DIST * fieldScale;
   const x = client.team === "red" ? CX - spawnDist : CX + spawnDist;
@@ -928,8 +1303,12 @@ function handlePlayerInput(room, client) {
 
   const isKicking = keys.shoot || keys.pass || keys.throughPass || keys.kick;
   p.kicking = isKicking;
-  const accel = isKicking ? room.gameSettings.playerKickAccel : room.gameSettings.playerAccel;
-  let damp = isKicking ? room.gameSettings.playerKickDamping : room.gameSettings.playerDamping;
+  const accel = isKicking
+    ? room.gameSettings.playerKickAccel
+    : room.gameSettings.playerAccel;
+  let damp = isKicking
+    ? room.gameSettings.playerKickDamping
+    : room.gameSettings.playerDamping;
 
   if (ax !== 0 || ay !== 0) {
     const dot = p.vx * ax + p.vy * ay;
@@ -987,11 +1366,20 @@ function circleCollision(a, b) {
   }
 }
 
-function kickBall(room, player, powerScale = 1, dirOverride = null, toucherClientId = null) {
+function kickBall(
+  room,
+  player,
+  powerScale = 1,
+  dirOverride = null,
+  toucherClientId = null,
+) {
   const dx = room.ball.x - player.x;
   const dy = room.ball.y - player.y;
   const dist = Math.hypot(dx, dy);
-  const kickRange = (player?.r || getPlayerRadius(room)) + BALL_R + room.gameSettings.kickRangeBonus;
+  const kickRange =
+    (player?.r || getPlayerRadius(room)) +
+    BALL_R +
+    room.gameSettings.kickRangeBonus;
   if (dist < kickRange && dist > 0.001) {
     const nx = dx / dist;
     const ny = dy / dist;
@@ -1114,8 +1502,18 @@ function constrainObj(room, obj) {
 
 function isGoal(room) {
   const field = getFieldMetrics(room);
-  if (room.ball.x < field.x1 && room.ball.y > field.goalY1 && room.ball.y < field.goalY2) return "blue";
-  if (room.ball.x > field.x2 && room.ball.y > field.goalY1 && room.ball.y < field.goalY2) return "red";
+  if (
+    room.ball.x < field.x1 &&
+    room.ball.y > field.goalY1 &&
+    room.ball.y < field.goalY2
+  )
+    return "blue";
+  if (
+    room.ball.x > field.x2 &&
+    room.ball.y > field.goalY1 &&
+    room.ball.y < field.goalY2
+  )
+    return "red";
   return null;
 }
 
@@ -1126,7 +1524,9 @@ function calculateEloDelta(playerElo, opponentAvgElo, score) {
 }
 
 function completeMatchPersistence(room, winnerTeam) {
-  const participants = getRoomClients(room).filter((c) => c.team === "red" || c.team === "blue");
+  const participants = getRoomClients(room).filter(
+    (c) => c.team === "red" || c.team === "blue",
+  );
   if (!participants.length) return { mvp: null };
 
   const withStats = participants.map((client) => ({
@@ -1153,10 +1553,16 @@ function completeMatchPersistence(room, winnerTeam) {
   const red = withStats.filter((x) => x.client.team === "red");
   const blue = withStats.filter((x) => x.client.team === "blue");
   const redAvgElo = red.length
-    ? red.reduce((sum, x) => sum + (getPlayerStoreEntryByClient(x.client).elo || 1000), 0) / red.length
+    ? red.reduce(
+        (sum, x) => sum + (getPlayerStoreEntryByClient(x.client).elo || 1000),
+        0,
+      ) / red.length
     : 1000;
   const blueAvgElo = blue.length
-    ? blue.reduce((sum, x) => sum + (getPlayerStoreEntryByClient(x.client).elo || 1000), 0) / blue.length
+    ? blue.reduce(
+        (sum, x) => sum + (getPlayerStoreEntryByClient(x.client).elo || 1000),
+        0,
+      ) / blue.length
     : 1000;
 
   for (const { client, stats } of withStats) {
@@ -1174,7 +1580,11 @@ function completeMatchPersistence(room, winnerTeam) {
     if (room.roomType === "ranked") {
       const score = draw ? 0.5 : won ? 1 : 0;
       const opponentAvg = client.team === "red" ? blueAvgElo : redAvgElo;
-      entry.elo = Math.max(600, (entry.elo || 1000) + calculateEloDelta(entry.elo || 1000, opponentAvg, score));
+      entry.elo = Math.max(
+        600,
+        (entry.elo || 1000) +
+          calculateEloDelta(entry.elo || 1000, opponentAvg, score),
+      );
     }
     entry.updatedAt = Date.now();
   }
@@ -1201,8 +1611,9 @@ function handleGoalCelebration(room) {
   if (room.goalScoredTimer > 0) return false;
 
   let winner = null;
-  if (room.scoreRed >= WIN_SCORE) winner = "red";
-  else if (room.scoreBlue >= WIN_SCORE) winner = "blue";
+  const targetScore = room.gameSettings.winScore || WIN_SCORE;
+  if (room.scoreRed >= targetScore) winner = "red";
+  else if (room.scoreBlue >= targetScore) winner = "blue";
   if (winner) {
     room.gameState = "ended";
     const { mvp } = completeMatchPersistence(room, winner);
@@ -1248,10 +1659,18 @@ function processKicks(room, activePlayers) {
             : client.keys?.kick
               ? "kick"
               : null;
-      if (actionType && performBallAction(room, client, teamPlayers, actionType)) {
-        client.matchStats = client.matchStats || { goals: 0, assists: 0, touches: 0 };
+      if (
+        actionType &&
+        performBallAction(room, client, teamPlayers, actionType)
+      ) {
+        client.matchStats = client.matchStats || {
+          goals: 0,
+          assists: 0,
+          touches: 0,
+        };
         client.matchStats.touches += 1;
-        client.kickCooldown = actionType === "pass" ? 6 : actionType === "throughPass" ? 7 : 8;
+        client.kickCooldown =
+          actionType === "pass" ? 6 : actionType === "throughPass" ? 7 : 8;
         if (room.kickoffPending && client.team === room.kickoffTeam) {
           room.kickoffPending = false;
         }
@@ -1308,7 +1727,7 @@ function applyKickoffWaitingRules(room, activePlayers) {
     const minDist = field.kickoffR + player.r;
     const dist = Math.hypot(dx, dy);
     if (dist < minDist) {
-      const nx = dist > 0.001 ? dx / dist : (client.team === "red" ? -1 : 1);
+      const nx = dist > 0.001 ? dx / dist : client.team === "red" ? -1 : 1;
       const ny = dist > 0.001 ? dy / dist : 0;
       player.x = CX + nx * minDist;
       player.y = CY + ny * minDist;
@@ -1332,12 +1751,20 @@ function checkGoalScored(room) {
   if (scorerId != null) {
     const scorer = clientsById.get(scorerId);
     if (scorer?.team === goal) {
-      scorer.matchStats = scorer.matchStats || { goals: 0, assists: 0, touches: 0 };
+      scorer.matchStats = scorer.matchStats || {
+        goals: 0,
+        assists: 0,
+        touches: 0,
+      };
       scorer.matchStats.goals += 1;
       if (assisterId != null && assisterId !== scorerId) {
         const assister = clientsById.get(assisterId);
         if (assister?.team === goal) {
-          assister.matchStats = assister.matchStats || { goals: 0, assists: 0, touches: 0 };
+          assister.matchStats = assister.matchStats || {
+            goals: 0,
+            assists: 0,
+            touches: 0,
+          };
           assister.matchStats.assists += 1;
         }
       }
@@ -1360,6 +1787,10 @@ function gameUpdate(room) {
   if (room.goalScoredState && handleGoalCelebration(room)) return;
   room.gameTime += 1 / 60;
   const activePlayers = getPlayersArray(room);
+  // Update bot AI before processing inputs
+  for (const { client } of activePlayers) {
+    if (client.isBot) updateBotAI(room, client);
+  }
   for (const { client } of activePlayers) handlePlayerInput(room, client);
   processKicks(room, activePlayers);
   applyMovement(room, activePlayers);
@@ -1412,7 +1843,10 @@ function broadcastState(room) {
   room.bcastMsg.kickoffTeam = room.kickoffTeam;
   room.bcastMsg.seq = ++room.stateSeq;
   room.bcastMsg.sentAt = now;
-  if (room.lastStateSentAt > 0 && now - room.lastStateSentAt > STATE_BROADCAST_MS * 1.8) {
+  if (
+    room.lastStateSentAt > 0 &&
+    now - room.lastStateSentAt > STATE_BROADCAST_MS * 1.8
+  ) {
     room.netStats.stateBursts++;
   }
   room.lastStateSentAt = now;
@@ -1426,7 +1860,9 @@ function broadcastState(room) {
       sendToClient(client, {
         type: "myPing",
         ping: client.pingMs ?? null,
-        pingRaw: Number.isFinite(client.pingRawMs) ? Math.round(client.pingRawMs) : null,
+        pingRaw: Number.isFinite(client.pingRawMs)
+          ? Math.round(client.pingRawMs)
+          : null,
       });
     }
   }
@@ -1483,7 +1919,10 @@ function startGameLoop(room) {
     pushSample(room.netStats.tickElapsedSamples, elapsedMs);
 
     let updatesThisCycle = 0;
-    while (accumulator >= TICK_MS && updatesThisCycle < Math.max(1, MAX_UPDATES_PER_CYCLE)) {
+    while (
+      accumulator >= TICK_MS &&
+      updatesThisCycle < Math.max(1, MAX_UPDATES_PER_CYCLE)
+    ) {
       gameUpdate(room);
       accumulator -= TICK_MS;
       updatesThisCycle++;
@@ -1508,7 +1947,10 @@ function startGameLoop(room) {
         room.gameLoopTimer = setImmediate(tick);
       } else {
         room.netStats.timeoutSchedules++;
-        room.gameLoopTimer = setTimeout(tick, Math.max(1, TICK_MS - accumulator));
+        room.gameLoopTimer = setTimeout(
+          tick,
+          Math.max(1, TICK_MS - accumulator),
+        );
       }
     }
   }
@@ -1533,15 +1975,31 @@ function handleListRooms(client) {
 function handleCreateRoom(client, msg) {
   const roomName = sanitizeRoomName(msg?.roomName, `Oda ${nextRoomId}`);
   const password = sanitizePassword(msg?.password);
-  const room = createRoomState(roomName, password, msg?.roomType);
-  logger.info("room_created", { roomId: room.id, roomName: room.name, roomType: room.roomType });
+  const room = createRoomState(
+    roomName,
+    password,
+    msg?.roomType,
+    msg?.settings,
+  );
+  logger.info("room_created", {
+    roomId: room.id,
+    roomName: room.name,
+    roomType: room.roomType,
+  });
   const joined = joinRoom(client, room, password, { action: "createRoom" });
   if (joined.ok) {
-    sendActionResult(client, "createRoom", true, "ROOM_CREATED", "Oda oluşturuldu.", {
-      roomId: room.id,
-      roomName: room.name,
-      roomType: room.roomType,
-    });
+    sendActionResult(
+      client,
+      "createRoom",
+      true,
+      "ROOM_CREATED",
+      "Oda oluşturuldu.",
+      {
+        roomId: room.id,
+        roomName: room.name,
+        roomType: room.roomType,
+      },
+    );
   }
 }
 
@@ -1554,20 +2012,42 @@ function handleJoinRoom(client, msg) {
 
 function handleLeaveRoom(client) {
   if (!client.roomId) {
-    sendActionResult(client, "leaveRoom", false, "NOT_IN_ROOM", "Herhangi bir odada değilsin.");
+    sendActionResult(
+      client,
+      "leaveRoom",
+      false,
+      "NOT_IN_ROOM",
+      "Herhangi bir odada değilsin.",
+    );
     return;
   }
-  leaveCurrentRoom(client, { sendRoomLeft: true, sendActionResult: true, action: "leaveRoom" });
+  leaveCurrentRoom(client, {
+    sendRoomLeft: true,
+    sendActionResult: true,
+    action: "leaveRoom",
+  });
 }
 
 function handleTeam(client, msg) {
   const room = getRoomByClient(client);
   if (!room) {
-    sendActionResult(client, "team", false, "NOT_IN_ROOM", "Önce bir odaya katılmalısın.");
+    sendActionResult(
+      client,
+      "team",
+      false,
+      "NOT_IN_ROOM",
+      "Önce bir odaya katılmalısın.",
+    );
     return;
   }
   if (!["red", "blue"].includes(msg.team)) {
-    sendActionResult(client, "team", false, "INVALID_TEAM", "Geçersiz takım seçimi.");
+    sendActionResult(
+      client,
+      "team",
+      false,
+      "INVALID_TEAM",
+      "Geçersiz takım seçimi.",
+    );
     return;
   }
   if (room.gameState === "playing" && client.team) {
@@ -1580,9 +2060,17 @@ function handleTeam(client, msg) {
     );
     return;
   }
-  const teamCount = getRoomClients(room).filter((c) => c.team === msg.team).length;
+  const teamCount = getRoomClients(room).filter(
+    (c) => c.team === msg.team,
+  ).length;
   if (teamCount >= MAX_TEAM_SIZE) {
-    sendActionResult(client, "team", false, "TEAM_FULL", "Seçtiğin takım dolu.");
+    sendActionResult(
+      client,
+      "team",
+      false,
+      "TEAM_FULL",
+      "Seçtiğin takım dolu.",
+    );
     return;
   }
   client.team = msg.team;
@@ -1601,24 +2089,49 @@ function handleTeam(client, msg) {
     spawnPlayerForClient(room, client);
   }
   publishRoomState(room);
-  sendActionResult(client, "team", true, "TEAM_JOINED", "Takım seçimi güncellendi.", {
-    team: msg.team,
-  });
+  sendActionResult(
+    client,
+    "team",
+    true,
+    "TEAM_JOINED",
+    "Takım seçimi güncellendi.",
+    {
+      team: msg.team,
+    },
+  );
 }
 
 function handleStart(client) {
   const room = getRoomByClient(client);
   if (!room) {
-    sendActionResult(client, "start", false, "NOT_IN_ROOM", "Önce bir odaya katılmalısın.");
+    sendActionResult(
+      client,
+      "start",
+      false,
+      "NOT_IN_ROOM",
+      "Önce bir odaya katılmalısın.",
+    );
     return;
   }
   ensureRoomHost(room);
   if (client.id !== room.hostId) {
-    sendActionResult(client, "start", false, "NOT_HOST", "Sadece oda sahibi maçı başlatabilir.");
+    sendActionResult(
+      client,
+      "start",
+      false,
+      "NOT_HOST",
+      "Sadece oda sahibi maçı başlatabilir.",
+    );
     return;
   }
   if (!isLobbyOrEnded(room)) {
-    sendActionResult(client, "start", false, "INVALID_GAME_STATE", "Maç zaten devam ediyor.");
+    sendActionResult(
+      client,
+      "start",
+      false,
+      "INVALID_GAME_STATE",
+      "Maç zaten devam ediyor.",
+    );
     return;
   }
   const roomClients = getRoomClients(room);
@@ -1641,12 +2154,24 @@ function handleStart(client) {
 function handleRestart(client) {
   const room = getRoomByClient(client);
   if (!room) {
-    sendActionResult(client, "restart", false, "NOT_IN_ROOM", "Önce bir odaya katılmalısın.");
+    sendActionResult(
+      client,
+      "restart",
+      false,
+      "NOT_IN_ROOM",
+      "Önce bir odaya katılmalısın.",
+    );
     return;
   }
   ensureRoomHost(room);
   if (client.id !== room.hostId) {
-    sendActionResult(client, "restart", false, "NOT_HOST", "Sadece oda sahibi lobiye döndürebilir.");
+    sendActionResult(
+      client,
+      "restart",
+      false,
+      "NOT_HOST",
+      "Sadece oda sahibi lobiye döndürebilir.",
+    );
     return;
   }
   stopGameLoop(room);
@@ -1666,7 +2191,97 @@ function handleRestart(client) {
     c.matchStats = { goals: 0, assists: 0, touches: 0 };
   }
   publishRoomState(room);
-  sendActionResult(client, "restart", true, "ROOM_RESET", "Oda tekrar lobiye alındı.");
+  sendActionResult(
+    client,
+    "restart",
+    true,
+    "ROOM_RESET",
+    "Oda tekrar lobiye alındı.",
+  );
+}
+
+function handlePause(client) {
+  const room = getRoomByClient(client);
+  if (!room) {
+    sendActionResult(
+      client,
+      "pause",
+      false,
+      "NOT_IN_ROOM",
+      "Önce bir odaya katılmalısın.",
+    );
+    return;
+  }
+  ensureRoomHost(room);
+  if (client.id !== room.hostId) {
+    sendActionResult(
+      client,
+      "pause",
+      false,
+      "NOT_HOST",
+      "Sadece oda sahibi duraklatabilir.",
+    );
+    return;
+  }
+  if (room.gameState !== "playing") {
+    sendActionResult(
+      client,
+      "pause",
+      false,
+      "NOT_PLAYING",
+      "Oyun devam etmiyor.",
+    );
+    return;
+  }
+  room.gameState = "paused";
+  stopGameLoop(room);
+  publishRoomState(room);
+  sendActionResult(client, "pause", true, "GAME_PAUSED", "Oyun duraklatıldı.");
+}
+
+function handleResume(client) {
+  const room = getRoomByClient(client);
+  if (!room) {
+    sendActionResult(
+      client,
+      "resume",
+      false,
+      "NOT_IN_ROOM",
+      "Önce bir odaya katılmalısın.",
+    );
+    return;
+  }
+  ensureRoomHost(room);
+  if (client.id !== room.hostId) {
+    sendActionResult(
+      client,
+      "resume",
+      false,
+      "NOT_HOST",
+      "Sadece oda sahibi devam ettirebilir.",
+    );
+    return;
+  }
+  if (room.gameState !== "paused") {
+    sendActionResult(
+      client,
+      "resume",
+      false,
+      "NOT_PAUSED",
+      "Oyun duraklatılmamış.",
+    );
+    return;
+  }
+  room.gameState = "playing";
+  startGameLoop(room);
+  publishRoomState(room);
+  sendActionResult(
+    client,
+    "resume",
+    true,
+    "GAME_RESUMED",
+    "Oyun devam ediyor.",
+  );
 }
 
 function handleInput(client, msg) {
@@ -1687,12 +2302,24 @@ function handleInput(client, msg) {
 function handleSettings(client, msg) {
   const room = getRoomByClient(client);
   if (!room) {
-    sendActionResult(client, "settings", false, "NOT_IN_ROOM", "Önce bir odaya katılmalısın.");
+    sendActionResult(
+      client,
+      "settings",
+      false,
+      "NOT_IN_ROOM",
+      "Önce bir odaya katılmalısın.",
+    );
     return;
   }
   ensureRoomHost(room);
   if (client.id !== room.hostId) {
-    sendActionResult(client, "settings", false, "NOT_HOST", "Sadece oda sahibi ayar değiştirebilir.");
+    sendActionResult(
+      client,
+      "settings",
+      false,
+      "NOT_HOST",
+      "Sadece oda sahibi ayar değiştirebilir.",
+    );
     return;
   }
   room.gameSettings = sanitizeSettings(msg.settings, room.gameSettings);
@@ -1704,14 +2331,24 @@ function handleSettings(client, msg) {
   for (const c of getRoomClients(room)) {
     if (c.player) constrainObj(room, c.player);
   }
-  broadcastRoom(room, { type: "settings", settings: room.gameSettings, hostId: room.hostId });
+  broadcastRoom(room, {
+    type: "settings",
+    settings: room.gameSettings,
+    hostId: room.hostId,
+  });
   sendLobbyUpdate(room);
 }
 
 function handleResetSettings(client) {
   const room = getRoomByClient(client);
   if (!room) {
-    sendActionResult(client, "resetSettings", false, "NOT_IN_ROOM", "Önce bir odaya katılmalısın.");
+    sendActionResult(
+      client,
+      "resetSettings",
+      false,
+      "NOT_IN_ROOM",
+      "Önce bir odaya katılmalısın.",
+    );
     return;
   }
   ensureRoomHost(room);
@@ -1734,9 +2371,19 @@ function handleResetSettings(client) {
   for (const c of getRoomClients(room)) {
     if (c.player) constrainObj(room, c.player);
   }
-  broadcastRoom(room, { type: "settings", settings: room.gameSettings, hostId: room.hostId });
+  broadcastRoom(room, {
+    type: "settings",
+    settings: room.gameSettings,
+    hostId: room.hostId,
+  });
   sendLobbyUpdate(room);
-  sendActionResult(client, "resetSettings", true, "SETTINGS_RESET", "Ayarlar varsayılanlara döndü.");
+  sendActionResult(
+    client,
+    "resetSettings",
+    true,
+    "SETTINGS_RESET",
+    "Ayarlar varsayılanlara döndü.",
+  );
 }
 
 function handleChat(client, msg) {
@@ -1744,9 +2391,14 @@ function handleChat(client, msg) {
   if (!room) return;
   if (isClientMutedInRoom(room, client.id)) return;
   const now = Date.now();
-  client.chatTimestamps = (client.chatTimestamps || []).filter((ts) => now - ts < CHAT_FLOOD_WINDOW_MS);
+  client.chatTimestamps = (client.chatTimestamps || []).filter(
+    (ts) => now - ts < CHAT_FLOOD_WINDOW_MS,
+  );
   if (client.chatTimestamps.length >= CHAT_FLOOD_LIMIT) {
-    sendToClient(client, { type: "roomError", message: "Sohbet limiti asildi. Biraz bekle." });
+    sendToClient(client, {
+      type: "roomError",
+      message: "Sohbet limiti asildi. Biraz bekle.",
+    });
     return;
   }
   client.chatTimestamps.push(now);
@@ -1781,16 +2433,34 @@ function handleQuickChat(client, msg) {
 function handleMutePlayer(client, msg) {
   const room = getRoomByClient(client);
   if (!room) {
-    sendActionResult(client, "mutePlayer", false, "NOT_IN_ROOM", "Önce bir odaya katılmalısın.");
+    sendActionResult(
+      client,
+      "mutePlayer",
+      false,
+      "NOT_IN_ROOM",
+      "Önce bir odaya katılmalısın.",
+    );
     return;
   }
   if (!canModerateRoom(room, client)) {
-    sendActionResult(client, "mutePlayer", false, "NOT_HOST", "Sadece oda sahibi susturabilir.");
+    sendActionResult(
+      client,
+      "mutePlayer",
+      false,
+      "NOT_HOST",
+      "Sadece oda sahibi susturabilir.",
+    );
     return;
   }
   const playerId = Number(msg?.playerId);
   if (!Number.isFinite(playerId) || playerId === client.id) {
-    sendActionResult(client, "mutePlayer", false, "INVALID_TARGET", "Geçersiz oyuncu seçimi.");
+    sendActionResult(
+      client,
+      "mutePlayer",
+      false,
+      "INVALID_TARGET",
+      "Geçersiz oyuncu seçimi.",
+    );
     return;
   }
   const muted = !!msg?.muted;
@@ -1810,21 +2480,45 @@ function handleMutePlayer(client, msg) {
 function handleKickPlayer(client, msg) {
   const room = getRoomByClient(client);
   if (!room) {
-    sendActionResult(client, "kickPlayer", false, "NOT_IN_ROOM", "Önce bir odaya katılmalısın.");
+    sendActionResult(
+      client,
+      "kickPlayer",
+      false,
+      "NOT_IN_ROOM",
+      "Önce bir odaya katılmalısın.",
+    );
     return;
   }
   if (!canModerateRoom(room, client)) {
-    sendActionResult(client, "kickPlayer", false, "NOT_HOST", "Sadece oda sahibi oyuncu atabilir.");
+    sendActionResult(
+      client,
+      "kickPlayer",
+      false,
+      "NOT_HOST",
+      "Sadece oda sahibi oyuncu atabilir.",
+    );
     return;
   }
   const playerId = Number(msg?.playerId);
   if (!Number.isFinite(playerId) || playerId === client.id) {
-    sendActionResult(client, "kickPlayer", false, "INVALID_TARGET", "Geçersiz oyuncu seçimi.");
+    sendActionResult(
+      client,
+      "kickPlayer",
+      false,
+      "INVALID_TARGET",
+      "Geçersiz oyuncu seçimi.",
+    );
     return;
   }
   const target = clientsById.get(playerId);
   if (!target || target.roomId !== room.id) {
-    sendActionResult(client, "kickPlayer", false, "TARGET_NOT_IN_ROOM", "Oyuncu odada değil.");
+    sendActionResult(
+      client,
+      "kickPlayer",
+      false,
+      "TARGET_NOT_IN_ROOM",
+      "Oyuncu odada değil.",
+    );
     return;
   }
   sendActionResult(
@@ -1835,41 +2529,86 @@ function handleKickPlayer(client, msg) {
     "Oda sahibi tarafından odadan atıldın.",
   );
   leaveCurrentRoom(target, { sendRoomLeft: true });
-  sendActionResult(client, "kickPlayer", true, "PLAYER_KICKED", "Oyuncu odadan atıldı.", {
-    playerId,
-  });
+  sendActionResult(
+    client,
+    "kickPlayer",
+    true,
+    "PLAYER_KICKED",
+    "Oyuncu odadan atıldı.",
+    {
+      playerId,
+    },
+  );
 }
 
 function handleTransferHost(client, msg) {
   const room = getRoomByClient(client);
   if (!room) {
-    sendActionResult(client, "transferHost", false, "NOT_IN_ROOM", "Önce bir odaya katılmalısın.");
+    sendActionResult(
+      client,
+      "transferHost",
+      false,
+      "NOT_IN_ROOM",
+      "Önce bir odaya katılmalısın.",
+    );
     return;
   }
   ensureRoomHost(room);
   if (client.id !== room.hostId) {
-    sendActionResult(client, "transferHost", false, "NOT_HOST", "Sadece oda sahibi host devredebilir.");
+    sendActionResult(
+      client,
+      "transferHost",
+      false,
+      "NOT_HOST",
+      "Sadece oda sahibi host devredebilir.",
+    );
     return;
   }
   const playerId = Number(msg?.playerId);
   if (!Number.isFinite(playerId) || playerId === client.id) {
-    sendActionResult(client, "transferHost", false, "INVALID_TARGET", "Geçersiz host adayı.");
+    sendActionResult(
+      client,
+      "transferHost",
+      false,
+      "INVALID_TARGET",
+      "Geçersiz host adayı.",
+    );
     return;
   }
   if (!room.clientIds.has(playerId)) {
-    sendActionResult(client, "transferHost", false, "TARGET_NOT_IN_ROOM", "Oyuncu odada değil.");
+    sendActionResult(
+      client,
+      "transferHost",
+      false,
+      "TARGET_NOT_IN_ROOM",
+      "Oyuncu odada değil.",
+    );
     return;
   }
   room.hostId = playerId;
   publishRoomState(room, { withRoomList: false });
-  sendActionResult(client, "transferHost", true, "HOST_TRANSFERRED", "Host devri tamamlandı.", {
-    nextHostId: playerId,
-  });
+  sendActionResult(
+    client,
+    "transferHost",
+    true,
+    "HOST_TRANSFERRED",
+    "Host devri tamamlandı.",
+    {
+      nextHostId: playerId,
+    },
+  );
   const target = clientsById.get(playerId);
   if (target) {
-    sendActionResult(target, "transferHost", true, "NOW_HOST", "Artık bu odanın sahibisin.", {
-      nextHostId: playerId,
-    });
+    sendActionResult(
+      target,
+      "transferHost",
+      true,
+      "NOW_HOST",
+      "Artık bu odanın sahibisin.",
+      {
+        nextHostId: playerId,
+      },
+    );
   }
 }
 
@@ -1891,7 +2630,8 @@ function handleNetTelemetry(client, msg) {
   const stateDeltaMaxMs = Number(msg?.stateDeltaMaxMs);
   const jitterBufferMs = Number(msg?.jitterBufferMs);
   const extrapolationEnabled = !!msg?.extrapolationEnabled;
-  if (!Number.isFinite(stateDeltaP95Ms) || !Number.isFinite(stateDeltaMaxMs)) return;
+  if (!Number.isFinite(stateDeltaP95Ms) || !Number.isFinite(stateDeltaMaxMs))
+    return;
   client.netTelemetry = {
     stateDeltaP95Ms: Math.max(0, Math.min(500, Math.round(stateDeltaP95Ms))),
     stateDeltaMaxMs: Math.max(0, Math.min(1200, Math.round(stateDeltaMaxMs))),
@@ -1954,6 +2694,8 @@ const messageHandlers = {
   leaveRoom: handleLeaveRoom,
   team: handleTeam,
   start: handleStart,
+  pause: handlePause,
+  resume: handleResume,
   restart: handleRestart,
   input: handleInput,
   settings: handleSettings,
@@ -1965,6 +2707,7 @@ const messageHandlers = {
   transferHost: handleTransferHost,
   requestLeaderboard: handleRequestLeaderboard,
   netTelemetry: handleNetTelemetry,
+  addBot: handleAddBot,
   reconnect: handleReconnect,
 };
 
@@ -1981,7 +2724,10 @@ function handleClientMessage(client, msg) {
 
 function isRateLimited(client, type) {
   const now = Date.now();
-  if (!client.rateLimitWindowStart || now - client.rateLimitWindowStart >= RATE_WINDOW_MS) {
+  if (
+    !client.rateLimitWindowStart ||
+    now - client.rateLimitWindowStart >= RATE_WINDOW_MS
+  ) {
     client.rateLimitWindowStart = now;
     client.rateLimitCounts = {};
   }
@@ -1994,7 +2740,10 @@ function isRateLimited(client, type) {
 
 function isPasswordAttemptsBlocked(client) {
   const now = Date.now();
-  if (!client.passwordFailWindowStart || now - client.passwordFailWindowStart >= PASSWORD_FAIL_WINDOW_MS) {
+  if (
+    !client.passwordFailWindowStart ||
+    now - client.passwordFailWindowStart >= PASSWORD_FAIL_WINDOW_MS
+  ) {
     client.passwordFailWindowStart = now;
     client.passwordFailCount = 0;
     return false;
@@ -2004,7 +2753,10 @@ function isPasswordAttemptsBlocked(client) {
 
 function registerFailedPasswordAttempt(client) {
   const now = Date.now();
-  if (!client.passwordFailWindowStart || now - client.passwordFailWindowStart >= PASSWORD_FAIL_WINDOW_MS) {
+  if (
+    !client.passwordFailWindowStart ||
+    now - client.passwordFailWindowStart >= PASSWORD_FAIL_WINDOW_MS
+  ) {
     client.passwordFailWindowStart = now;
     client.passwordFailCount = 0;
   }
@@ -2022,7 +2774,8 @@ function startPingLoop() {
     const now = Date.now();
     for (const [ws, client] of clients) {
       if (
-        (client.awaitingPong && now - client.lastPingSentAt > PONG_TIMEOUT_MS) ||
+        (client.awaitingPong &&
+          now - client.lastPingSentAt > PONG_TIMEOUT_MS) ||
         now - client.lastPongAt > PONG_TIMEOUT_MS
       ) {
         ws.terminate();
@@ -2035,7 +2788,9 @@ function startPingLoop() {
         client.lastPingSentAt = now;
         client.lastPingHrNs = process.hrtime.bigint();
         client.nextPingAt =
-          now + PING_INTERVAL_MS + Math.floor(Math.random() * Math.max(1, PING_JITTER_MS));
+          now +
+          PING_INTERVAL_MS +
+          Math.floor(Math.random() * Math.max(1, PING_JITTER_MS));
         ws.ping();
       }
     }
@@ -2066,7 +2821,11 @@ function handleDisconnect(client) {
 
 wss.on("connection", (ws, req) => {
   const origin = String(req?.headers?.origin || "");
-  if (ALLOWED_ORIGINS.length > 0 && origin && !ALLOWED_ORIGINS.includes(origin)) {
+  if (
+    ALLOWED_ORIGINS.length > 0 &&
+    origin &&
+    !ALLOWED_ORIGINS.includes(origin)
+  ) {
     ws.close(1008, "Origin not allowed");
     return;
   }
@@ -2134,7 +2893,9 @@ wss.on("connection", (ws, req) => {
   sendRoomList(clientData);
 
   ws.on("message", (raw) => {
-    const rawSize = Buffer.isBuffer(raw) ? raw.length : Buffer.byteLength(String(raw), "utf8");
+    const rawSize = Buffer.isBuffer(raw)
+      ? raw.length
+      : Buffer.byteLength(String(raw), "utf8");
     if (rawSize > MAX_WS_PAYLOAD_BYTES) {
       ws.close(1009, "Payload too large");
       return;
@@ -2169,7 +2930,9 @@ wss.on("connection", (ws, req) => {
     } else {
       client.pingMs = Math.max(
         0,
-        Math.round(client.pingMs + (rawPing - client.pingMs) * PING_SMOOTHING_ALPHA),
+        Math.round(
+          client.pingMs + (rawPing - client.pingMs) * PING_SMOOTHING_ALPHA,
+        ),
       );
     }
   });
@@ -2211,13 +2974,36 @@ function shutdown(signal) {
 process.on("SIGINT", () => shutdown("SIGINT"));
 process.on("SIGTERM", () => shutdown("SIGTERM"));
 process.on("uncaughtException", (err) => {
-  logger.error("uncaught_exception", { error: err?.message, stack: err?.stack });
+  logger.error("uncaught_exception", {
+    error: err?.message,
+    stack: err?.stack,
+  });
+  // On fatal startup errors like EADDRINUSE, we must exit so the supervisor can restart
+  // or the user can see the process has finished/failed.
+  process.exit(1);
 });
 process.on("unhandledRejection", (reason) => {
   logger.error("unhandled_rejection", { reason: String(reason) });
 });
 
 // ============ START SERVER ============
+
+// Handle server errors (like EADDRINUSE) explicitly
+server.on("error", (err) => {
+  if (err.code === "EADDRINUSE") {
+    logger.error("server_error", {
+      message: `Port ${PORT} is already in use.`,
+      code: err.code,
+    });
+    process.exit(1);
+  } else {
+    logger.error("server_error", {
+      message: err.message,
+      stack: err.stack,
+    });
+    process.exit(1);
+  }
+});
 
 server.listen(PORT, "0.0.0.0", () => {
   const nets = os.networkInterfaces();
